@@ -63,17 +63,13 @@ class BertSelfAttention(nn.Module):
         # Attention_mask: [B, 1, 1, T], with 0 and -inf.
         # The following will be broadcasted.
         wei = wei + attention_mask
-
         wei = F.softmax(wei, dim=-1)
 
         # Size: B, n, T, h
         wei = wei @ value
 
         # Convert back to: B, T, C = n * h
-        out = wei.transpose(1, 2).view(B, T, -1)
-
-        # B, T, C
-        raise out
+        return wei.transpose(1, 2).contiguous().view(B, T, -1)
 
     def forward(self, hidden_states, attention_mask):
         """
