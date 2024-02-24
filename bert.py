@@ -248,7 +248,7 @@ class BertModel(BertPreTrainedModel):
             embedding_output, attention_mask=attention_mask)
 
         # Get cls token hidden state.
-        # Size: (B, 1, C)
+        # Size: (B, C)
         first_tk = sequence_output[:, 0]
         first_tk = self.pooler_dense(first_tk)
         first_tk = self.pooler_af(first_tk)
