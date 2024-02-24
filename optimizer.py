@@ -16,14 +16,19 @@ class AdamW(Optimizer):
             correct_bias: bool = True,
     ):
         if lr < 0.0:
-            raise ValueError("Invalid learning rate: {} - should be >= 0.0".format(lr))
+            raise ValueError(
+                "Invalid learning rate: {} - should be >= 0.0".format(lr))
         if not 0.0 <= betas[0] < 1.0:
-            raise ValueError("Invalid beta parameter: {} - should be in [0.0, 1.0[".format(betas[0]))
+            raise ValueError(
+                "Invalid beta parameter: {} - should be in [0.0, 1.0[".format(betas[0]))
         if not 0.0 <= betas[1] < 1.0:
-            raise ValueError("Invalid beta parameter: {} - should be in [0.0, 1.0[".format(betas[1]))
+            raise ValueError(
+                "Invalid beta parameter: {} - should be in [0.0, 1.0[".format(betas[1]))
         if not 0.0 <= eps:
-            raise ValueError("Invalid epsilon value: {} - should be >= 0.0".format(eps))
-        defaults = dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay, correct_bias=correct_bias)
+            raise ValueError(
+                "Invalid epsilon value: {} - should be >= 0.0".format(eps))
+        defaults = dict(lr=lr, betas=betas, eps=eps,
+                        weight_decay=weight_decay, correct_bias=correct_bias)
         super().__init__(params, defaults)
 
     def step(self, closure: Callable = None):
@@ -37,10 +42,17 @@ class AdamW(Optimizer):
                     continue
                 grad = p.grad.data
                 if grad.is_sparse:
-                    raise RuntimeError("Adam does not support sparse gradients, please consider SparseAdam instead")
+                    raise RuntimeError(
+                        "Adam does not support sparse gradients, please consider SparseAdam instead")
 
                 # State should be stored in this dictionary.
-                state = self.state[p]
+                state: dict = self.state[p]
+                if 'm' not in state:
+                    state['m'] = torch.zeros_like(p.data)
+                if 'v' not in state:
+                    state['v'] = torch.zeros_like(p.data)
+                if 't' not in state:
+                    state['t'] = 0
 
                 # Access hyperparameters from the `group` dictionary.
                 alpha = group["lr"]
@@ -59,8 +71,22 @@ class AdamW(Optimizer):
                 # 4. Apply weight decay after the main gradient-based updates.
                 # Refer to the default project handout for more details.
 
-                ### TODO
-                raise NotImplementedError
+                state['t'] += 1
 
+                beta_1, beta_2 = group['betas']
+
+                m = beta_1 * state['m'] + (1 - beta_1) * grad
+                v = beta_2 * state['v'] + (1 - beta_2) * grad.pow(2)
+
+                state['m'] = m
+                state['v'] = v
+
+                alpha_t = alpha * \
+                    ((1 - beta_2 ** state['t']) ** 0.5) / \
+                    (1 - beta_1 ** state['t'])
+
+                p.data -= alpha_t * m / (v ** 0.5 + group['eps'])
+
+                p.data = p.data * (1 - alpha * group['weight_decay'])
 
         return loss
