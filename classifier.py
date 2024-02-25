@@ -58,15 +58,15 @@ class BertSentimentClassifier(torch.nn.Module):
         '''Takes a batch of sentences and returns BERT embeddings'''
         return self.bert.embed(input_ids=input_ids)
 
-    def forward(self, input_ids, attention_mask, forward_embedding=False):
+    def forward(self, ids_or_embedding, attention_mask, is_embedding=False):
         '''Takes a batch of sentences and returns logits for sentiment classes'''
         # The final BERT contextualized embedding is the hidden state of [CLS] token (the first token).
         # HINT: You should consider what is an appropriate return value given that
         # the training loop currently uses F.cross_entropy as the loss function.
-        if forward_embedding:
-            res = self.bert.forward_with_embedding(input_ids, attention_mask)
+        if is_embedding:
+            res = self.bert.forward_with_embedding(ids_or_embedding, attention_mask)
         else:
-            res = self.bert(input_ids, attention_mask)
+            res = self.bert(ids_or_embedding, attention_mask)
 
         # Size: (B, C)
         pooler_output = res["pooler_output"]
@@ -275,9 +275,9 @@ def smart_loss(model: nn.Module, b_ids: torch.Tensor, b_mask: torch.Tensor, orgi
         grad = grad / (torch.norm(grad, float('inf')) + 1e-8)
         # Perform the SMART update.
         embeddings_perturbed = embeddings_perturbed + args.eta * grad
-        # If the norm of the perturbation is greater than epsilon, then we stop the loop.
-        if torch.norm(embeddings_perturbed - start_embeddings, float('inf')) > args.epsilon:
-            break
+        # Project embeddings_perturbed back to the L_inf ball of radius epsilon centered at start_embeddings.
+        embeddings_perturbed = start_embeddings + \
+            torch.clamp(embeddings_perturbed - start_embeddings, -args.epsilon, args.epsilon)
     return loss_perturbed
 
 
