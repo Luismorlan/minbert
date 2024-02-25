@@ -72,7 +72,9 @@ class BertSentimentClassifier(torch.nn.Module):
         pooler_output = res["pooler_output"]
 
         # Size: (B, L)
-        out = self.proj(self.pooler_dropout(pooler_output))
+        # Applying dropout achieves worse performance.
+        # out = self.proj(self.pooler_dropout(pooler_output))
+        out = self.proj(pooler_output)
 
         # Directly output the raw logits so that it can be used in the loss function.
         return out
