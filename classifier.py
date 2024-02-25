@@ -67,7 +67,8 @@ class BertSentimentClassifier(torch.nn.Module):
         # HINT: You should consider what is an appropriate return value given that
         # the training loop currently uses F.cross_entropy as the loss function.
         if is_embedding:
-            res = self.bert.forward_with_embedding(ids_or_embedding, attention_mask)
+            res = self.bert.forward_with_embedding(
+                ids_or_embedding, attention_mask)
         else:
             res = self.bert(ids_or_embedding, attention_mask)
 
@@ -310,25 +311,29 @@ def smart_loss(model: nn.Module, b_ids: torch.Tensor, b_mask: torch.Tensor, orgi
     # Perturb the embedding with Gaussian noise.
     embeddings_perturbed = start_embeddings + \
         torch.normal(0, args.sigma, start_embeddings.size())
+    # We need to compute the gradient w.r.t. the perturbed embedding to move it around
+    embeddings_perturbed.requires_grad = True
     # Loop until either tx iterations have been performed or the norm of the perturbation is greater than epsilon.
-    for _ in range(args.tx):
-        # Compute the gradient of the loss with respect to the perturbed embedding.
-        embeddings_perturbed.requires_grad_()
-        logits = model(embeddings_perturbed, b_mask, forward_embedding=True)
+    for it in range(args.tx):
+        # Forward the model
+        logits = model(embeddings_perturbed, b_mask, is_embedding=True)
         # Use symmetrizied KL divergence as the loss function.
         loss_perturbed = F.kl_div(F.log_softmax(logits, dim=1), F.log_softmax(
             orginal_logits, dim=1), reduction='batchmean', log_target=True)
         loss_perturbed += F.kl_div(F.log_softmax(orginal_logits, dim=1), F.log_softmax(
             logits, dim=1), reduction='batchmean', log_target=True)
-        grad = torch.autograd.grad(
-            loss_perturbed, embeddings_perturbed)[0]
+       # Note that for the final iteration, we actually don't need to compute the gradient w.r.t. the perturbed embedding, so we can break the loop here.
+        if it == args.tx - 1:
+            break
+        grad = torch.autograd.grad(loss_perturbed, embeddings_perturbed)[0]
         # Normalize the gradient by infinity norm
         grad = grad / (torch.norm(grad, float('inf')) + 1e-8)
         # Perform the SMART update.
         embeddings_perturbed = embeddings_perturbed + args.eta * grad
         # Project embeddings_perturbed back to the L_inf ball of radius epsilon centered at start_embeddings.
         embeddings_perturbed = start_embeddings + \
-            torch.clamp(embeddings_perturbed - start_embeddings, -args.epsilon, args.epsilon)
+            torch.clamp(embeddings_perturbed - start_embeddings, -
+                        args.epsilon, args.epsilon)
     return loss_perturbed
 
 
@@ -383,7 +388,7 @@ def train(args):
             if args.smart:
                 # Add loss to the original loss.
                 loss += args.lambda_s * \
-                    smart_loss(model, b_ids, b_mask, b_labels, logits, args)
+                    smart_loss(model, b_ids, b_mask, logits, args)
 
             loss.backward()
             optimizer.step()
@@ -491,7 +496,12 @@ def get_dataset_config(ds: str, args: Any):
             option=args.option,
             dev_out='predictions/' + args.option + '-sst-dev-out.csv',
             test_out='predictions/' + args.option + '-sst-test-out.csv',
-            smart=args.smart
+            smart=args.smart,
+            lambda_s=args.lambda_s,
+            sigma=args.sigma,
+            epsilon=args.epsilon,
+            eta=args.eta,
+            tx=args.tx
         ),
         "cfimdb": SimpleNamespace(
             filepath='cfimdb-classifier.pt',
@@ -506,7 +516,12 @@ def get_dataset_config(ds: str, args: Any):
             option=args.option,
             dev_out='predictions/' + args.option + '-cfimdb-dev-out.csv',
             test_out='predictions/' + args.option + '-cfimdb-test-out.csv',
-            smart=args.smart
+            smart=args.smart,
+            lambda_s=args.lambda_s,
+            sigma=args.sigma,
+            epsilon=args.epsilon,
+            eta=args.eta,
+            tx=args.tx
         ),
     }
 
