@@ -252,6 +252,33 @@ def save_model(model, optimizer, args, config, filepath):
     print(f"save the model to {filepath}")
 
 
+def smart_loss(model: nn.Module, b_ids: torch.Tensor, b_mask: torch.Tensor, orginal_logits: torch.Tensor, args):
+     # In addition to the standard cross-entropy loss, we also add the SMART loss.
+    # Compute the embedding of the batch
+    start_embeddings = model.embed(b_ids)
+    # Perturb the embedding with Gaussian noise.
+    embeddings_perturbed = start_embeddings + \
+        torch.normal(0, args.sigma, start_embeddings.size())
+    # Loop until either tx iterations have been performed or the norm of the perturbation is greater than epsilon.
+    for _ in range(args.tx):
+        # Compute the gradient of the loss with respect to the perturbed embedding.
+        embeddings_perturbed.requires_grad_()
+        logits = model(embeddings_perturbed, b_mask, forward_embedding=True)
+        # Use symmetrizied KL divergence as the loss function.
+        loss_perturbed = F.kl_div(F.log_softmax(logits, dim=1), F.log_softmax(orginal_logits, dim=1), reduction='sum') / args.batch_size
+        loss_perturbed += F.kl_div(F.log_softmax(orginal_logits, dim=1), F.log_softmax(logits, dim=1), reduction='sum') / args.batch_size
+        grad = torch.autograd.grad(
+            loss_perturbed, embeddings_perturbed)[0]
+        # Normalize the gradient by infinity norm
+        grad = grad / (torch.norm(grad, float('inf')) + 1e-8)
+        # Perform the SMART update.
+        embeddings_perturbed = embeddings_perturbed + args.eta * grad
+        # If the norm of the perturbation is greater than epsilon, then we stop the loop.
+        if torch.norm(embeddings_perturbed - start_embeddings) > args.epsilon:
+            break
+    return loss_perturbed
+
+
 def train(args):
     device = torch.device('cuda') if args.use_gpu else torch.device('cpu')
     # Create the data and its corresponding datasets and dataloader.
@@ -301,30 +328,8 @@ def train(args):
                 logits, b_labels.view(-1), reduction='sum') / args.batch_size
 
             if args.smart:
-                # In addition to the standard cross-entropy loss, we also add the SMART loss.
-                # Compute the embedding of the batch
-                start_embeddings = model.embed(b_ids)
-                # Perturb the embedding with Gaussian noise.
-                embeddings_perturbed = start_embeddings + \
-                    torch.normal(0, args.sigma, start_embeddings.size())
-                # Loop until either tx iterations have been performed or the norm of the perturbation is greater than epsilon.
-                for _ in range(args.tx):
-                    # Compute the gradient of the loss with respect to the perturbed embedding.
-                    embeddings_perturbed.requires_grad_()
-                    logits = model(embeddings_perturbed, b_mask, forward_embedding=True)
-                    loss_perturbed = F.cross_entropy(
-                        logits, b_labels.view(-1), reduction='sum') / args.batch_size
-                    grad = torch.autograd.grad(
-                        loss_perturbed, embeddings_perturbed)[0]
-                    # Normalize the gradient by infinity norm
-                    grad = grad / (torch.norm(grad, float('inf')) + 1e-8)
-                    # Perform the SMART update.
-                    embeddings_perturbed = embeddings_perturbed + args.eta * grad
-                    # If the norm of the perturbation is greater than epsilon, then we stop the loop.
-                    if torch.norm(embeddings_perturbed - start_embeddings) > args.epsilon:
-                        break
                 # Add loss to the original loss.
-                loss += args.lambda_s * loss_perturbed
+                loss += args.lambda_s * smart_loss(model, b_ids, b_mask, b_labels, logits, args)
 
             loss.backward()
             optimizer.step()
