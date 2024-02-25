@@ -276,7 +276,7 @@ def smart_loss(model: nn.Module, b_ids: torch.Tensor, b_mask: torch.Tensor, orgi
         # Perform the SMART update.
         embeddings_perturbed = embeddings_perturbed + args.eta * grad
         # If the norm of the perturbation is greater than epsilon, then we stop the loop.
-        if torch.norm(embeddings_perturbed - start_embeddings) > args.epsilon:
+        if torch.norm(embeddings_perturbed - start_embeddings, float('inf')) > args.epsilon:
             break
     return loss_perturbed
 
