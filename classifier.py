@@ -74,7 +74,7 @@ class BertSentimentClassifier(torch.nn.Module):
         # Size: (B, L)
         out = self.proj(self.pooler_dropout(pooler_output))
 
-        # Directly output the raw logits so that it can be used in the loss function. Return BERT's output so that it can be used in the SMART update.
+        # Directly output the raw logits so that it can be used in the loss function.
         return out
 
 
