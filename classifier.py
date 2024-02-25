@@ -267,8 +267,8 @@ def smart_loss(model: nn.Module, b_ids: torch.Tensor, b_mask: torch.Tensor, orgi
         embeddings_perturbed.requires_grad_()
         logits = model(embeddings_perturbed, b_mask, forward_embedding=True)
         # Use symmetrizied KL divergence as the loss function.
-        loss_perturbed = F.kl_div(F.log_softmax(logits, dim=1), F.log_softmax(orginal_logits, dim=1), reduction='sum') / args.batch_size
-        loss_perturbed += F.kl_div(F.log_softmax(orginal_logits, dim=1), F.log_softmax(logits, dim=1), reduction='sum') / args.batch_size
+        loss_perturbed = F.kl_div(F.log_softmax(logits, dim=1), F.log_softmax(orginal_logits, dim=1), reduction='batchmean', log_target=True)
+        loss_perturbed += F.kl_div(F.log_softmax(orginal_logits, dim=1), F.log_softmax(logits, dim=1), reduction='batchmean', log_target=True)
         grad = torch.autograd.grad(
             loss_perturbed, embeddings_perturbed)[0]
         # Normalize the gradient by infinity norm
