@@ -1,4 +1,7 @@
+from atexit import register
 import random
+from this import d
+from typing import Any
 import numpy as np
 import argparse
 import torch.nn as nn
@@ -78,6 +81,52 @@ class BertSentimentClassifier(torch.nn.Module):
 
         # Directly output the raw logits so that it can be used in the loss function.
         return out
+
+
+class BertRegressor(torch.nn.Module):
+    '''
+    This module performs the regression task using BERT embeddings.
+
+    This is used for tasks such as SemEval where the output is a real number.
+    '''
+
+    def __init__(self, config):
+        super().__init__()
+        self.num_labels = config.num_labels
+        self.bert = BertModel.from_pretrained('bert-base-uncased')
+
+        # Pretrain mode does not require updating BERT paramters.
+        for param in self.bert.parameters():
+            if config.option == 'pretrain':
+                param.requires_grad = False
+            elif config.option == 'finetune':
+                param.requires_grad = True
+
+        # Linear projection from the feature to a real number for regression task.
+        self.proj = nn.Linear(config.hidden_size, 1)
+
+    def embed(self, input_ids):
+        '''Takes a batch of sentences and returns BERT embeddings'''
+        return self.bert.embed(input_ids=input_ids)
+
+    def forward(self, input_ids, attention_mask, forward_embedding=False):
+        '''Takes a batch of sentences and returns logits for sentiment classes'''
+        # The final BERT contextualized embedding is the hidden state of [CLS] token (the first token).
+        # HINT: You should consider what is an appropriate return value given that
+        # the training loop currently uses F.cross_entropy as the loss function.
+        if forward_embedding:
+            res = self.bert.forward_with_embedding(input_ids, attention_mask)
+        else:
+            res = self.bert(input_ids, attention_mask)
+
+        # Size: (B, C)
+        pooler_output = res["pooler_output"]
+
+        # Size: (B, 1)
+        out = self.proj(pooler_output)
+
+        # scale up to between [0, 5]
+        return 5 * torch.sigmoid(out)
 
 
 class SentimentDataset(Dataset):
@@ -255,7 +304,7 @@ def save_model(model, optimizer, args, config, filepath):
 
 
 def smart_loss(model: nn.Module, b_ids: torch.Tensor, b_mask: torch.Tensor, orginal_logits: torch.Tensor, args):
-     # In addition to the standard cross-entropy loss, we also add the SMART loss.
+    # In addition to the standard cross-entropy loss, we also add the SMART loss.
     # Compute the embedding of the batch
     start_embeddings = model.embed(b_ids)
     # Perturb the embedding with Gaussian noise.
@@ -267,8 +316,10 @@ def smart_loss(model: nn.Module, b_ids: torch.Tensor, b_mask: torch.Tensor, orgi
         embeddings_perturbed.requires_grad_()
         logits = model(embeddings_perturbed, b_mask, forward_embedding=True)
         # Use symmetrizied KL divergence as the loss function.
-        loss_perturbed = F.kl_div(F.log_softmax(logits, dim=1), F.log_softmax(orginal_logits, dim=1), reduction='batchmean', log_target=True)
-        loss_perturbed += F.kl_div(F.log_softmax(orginal_logits, dim=1), F.log_softmax(logits, dim=1), reduction='batchmean', log_target=True)
+        loss_perturbed = F.kl_div(F.log_softmax(logits, dim=1), F.log_softmax(
+            orginal_logits, dim=1), reduction='batchmean', log_target=True)
+        loss_perturbed += F.kl_div(F.log_softmax(orginal_logits, dim=1), F.log_softmax(
+            logits, dim=1), reduction='batchmean', log_target=True)
         grad = torch.autograd.grad(
             loss_perturbed, embeddings_perturbed)[0]
         # Normalize the gradient by infinity norm
@@ -331,7 +382,8 @@ def train(args):
 
             if args.smart:
                 # Add loss to the original loss.
-                loss += args.lambda_s * smart_loss(model, b_ids, b_mask, b_labels, logits, args)
+                loss += args.lambda_s * \
+                    smart_loss(model, b_ids, b_mask, b_labels, logits, args)
 
             loss.backward()
             optimizer.step()
@@ -404,61 +456,76 @@ def get_args():
     parser.add_argument("--hidden_dropout_prob", type=float, default=0.3)
     parser.add_argument("--lr", type=float, help="learning rate, default lr for 'pretrain': 1e-3, 'finetune': 1e-5",
                         default=1e-3)
-    parser.add_argument("--smart", type=bool, default=False, help='use SMART (https://arxiv.org/abs/1911.03437) update to fine-tune the model')
-    parser.add_argument("--lambda_s", type=float, default=1.0, help='lambda_s for the SMART update, only used when --smart is True')
-    parser.add_argument("--sigma", type=float, default=1e-5, help='sigma for the SMART update, only used when --smart is True')
-    parser.add_argument("--epsilon", type=float, default=1e-5, help='epsilon for the SMART update, only used when --smart is True')
-    parser.add_argument("--eta", type=float, default=1e-3, help='eta for the SMART update, only used when --smart is True')
-    parser.add_argument("--tx", type=int, default=1, help='Iteration size of x for the SMART update, only used when --smart is True')
+    parser.add_argument("--smart", type=bool, default=False,
+                        help='use SMART (https://arxiv.org/abs/1911.03437) update to fine-tune the model')
+    parser.add_argument("--lambda_s", type=float, default=1.0,
+                        help='lambda_s for the SMART update, only used when --smart is True')
+    parser.add_argument("--sigma", type=float, default=1e-5,
+                        help='sigma for the SMART update, only used when --smart is True')
+    parser.add_argument("--epsilon", type=float, default=1e-5,
+                        help='epsilon for the SMART update, only used when --smart is True')
+    parser.add_argument("--eta", type=float, default=1e-3,
+                        help='eta for the SMART update, only used when --smart is True')
+    parser.add_argument("--tx", type=int, default=1,
+                        help='Iteration size of x for the SMART update, only used when --smart is True')
+    parser.add_argument("--dataset", nargs="*", choices=[
+                        'sst', 'cfimdb', 'quora', 'semeval'], default=["sst", "cfimdb"], help="List of datasets that can be used to train or finetune.")
 
     args = parser.parse_args()
     return args
+
+
+def get_dataset_config(ds: str, args: Any):
+    # TODO: Add 2 Quora and SemEval datasets.
+    registry = {
+        "sst": SimpleNamespace(
+            filepath='sst-classifier.pt',
+            lr=args.lr,
+            use_gpu=args.use_gpu,
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            hidden_dropout_prob=args.hidden_dropout_prob,
+            train='data/ids-sst-train.csv',
+            dev='data/ids-sst-dev.csv',
+            test='data/ids-sst-test-student.csv',
+            option=args.option,
+            dev_out='predictions/' + args.option + '-sst-dev-out.csv',
+            test_out='predictions/' + args.option + '-sst-test-out.csv',
+            smart=args.smart
+        ),
+        "cfimdb": SimpleNamespace(
+            filepath='cfimdb-classifier.pt',
+            lr=args.lr,
+            use_gpu=args.use_gpu,
+            epochs=args.epochs,
+            batch_size=8,
+            hidden_dropout_prob=args.hidden_dropout_prob,
+            train='data/ids-cfimdb-train.csv',
+            dev='data/ids-cfimdb-dev.csv',
+            test='data/ids-cfimdb-test-student.csv',
+            option=args.option,
+            dev_out='predictions/' + args.option + '-cfimdb-dev-out.csv',
+            test_out='predictions/' + args.option + '-cfimdb-test-out.csv',
+            smart=args.smart
+        ),
+    }
+
+    if ds not in registry:
+        raise NotImplementedError
+
+    return registry[ds]
 
 
 if __name__ == "__main__":
     args = get_args()
     seed_everything(args.seed)
 
-    print('Training Sentiment Classifier on SST...')
-    config = SimpleNamespace(
-        filepath='sst-classifier.pt',
-        lr=args.lr,
-        use_gpu=args.use_gpu,
-        epochs=args.epochs,
-        batch_size=args.batch_size,
-        hidden_dropout_prob=args.hidden_dropout_prob,
-        train='data/ids-sst-train.csv',
-        dev='data/ids-sst-dev.csv',
-        test='data/ids-sst-test-student.csv',
-        option=args.option,
-        dev_out='predictions/' + args.option + '-sst-dev-out.csv',
-        test_out='predictions/' + args.option + '-sst-test-out.csv',
-        smart=args.smart
-    )
+    for ds in args.dataset:
+        print(f'Training Bert on {ds}...')
 
-    train(config)
+        config = get_dataset_config(ds, args)
 
-    print('Evaluating on SST...')
-    test(config)
+        train(config)
 
-    print('Training Sentiment Classifier on cfimdb...')
-    config = SimpleNamespace(
-        filepath='cfimdb-classifier.pt',
-        lr=args.lr,
-        use_gpu=args.use_gpu,
-        epochs=args.epochs,
-        batch_size=8,
-        hidden_dropout_prob=args.hidden_dropout_prob,
-        train='data/ids-cfimdb-train.csv',
-        dev='data/ids-cfimdb-dev.csv',
-        test='data/ids-cfimdb-test-student.csv',
-        option=args.option,
-        dev_out='predictions/' + args.option + '-cfimdb-dev-out.csv',
-        test_out='predictions/' + args.option + '-cfimdb-test-out.csv',
-        smart=args.smart
-    )
-
-    train(config)
-
-    print('Evaluating on cfimdb...')
-    test(config)
+        print(f'Evaluating on {ds}...')
+        test(config)
