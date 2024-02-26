@@ -305,21 +305,20 @@ def save_model(model, optimizer, args, config, filepath):
     print(f"save the model to {filepath}")
 
 
-def get_pertub_loss(model: nn.Module, b_ids: torch.Tensor, b_mask: torch.Tensor, orginal_logits: torch.Tensor, args: Any):
+def get_perturb_loss(model: nn.Module, b_ids: torch.Tensor, b_mask: torch.Tensor, orginal_logits: torch.Tensor, args: Any, device: Any):
     # In addition to the standard cross-entropy loss, we also add the SMART loss.
     # Compute the embedding of the batch
-    with torch.no_grad():
-        start_embeddings = model.embed(b_ids)
+    start_embeddings = model.embed(b_ids)
 
     # Perturb the embedding with Gaussian noise.
     embeddings_perturbed: torch.Tensor = start_embeddings + \
-        torch.normal(0, args.sigma, start_embeddings.size())
+        torch.normal(0, args.sigma, start_embeddings.size()).to(device)
 
     # Loop until either tx iterations have been performed or the norm of the perturbation is greater than epsilon.
     for _ in range(args.tx):
         # Compute the gradient of the loss with respect to the perturbed embedding.
         embeddings_perturbed.requires_grad_()
-        logits = model(embeddings_perturbed, b_mask, forward_embedding=True)
+        logits = model(embeddings_perturbed, b_mask, is_embedding=True)
 
         # Use symmetrizied KL divergence as the loss function.
         # TODO: unify the l_s calculation into a single function that also usable for regression task.
@@ -346,15 +345,25 @@ def get_pertub_loss(model: nn.Module, b_ids: torch.Tensor, b_mask: torch.Tensor,
             torch.clamp(embeddings_perturbed - start_embeddings, -
                         args.epsilon, args.epsilon)
 
-    return loss_perturbed
+    # Calculating one more time for the final perturbatin loss, after we find
+    # the most adversarial perturbation.
+    logits = model(embeddings_perturbed, b_mask, is_embedding=True)
+
+    return F.kl_div(
+        F.log_softmax(logits, dim=-1),
+        F.log_softmax(orginal_logits, dim=-1),
+        reduction='batchmean',
+        log_target=True,
+    ) + F.kl_div(
+        F.log_softmax(orginal_logits, dim=-1),
+        F.log_softmax(logits, dim=-1),
+        reduction='batchmean',
+        log_target=True
+    )
 
 
-def get_bregmman_loss(model: nn.Module, model_tilde: nn.Module, b_ids: torch.Tensor, b_mask: torch.Tensor, args: Any):
+def get_bregmman_loss(model_tilde: nn.Module, logits: torch.Tensor, b_ids: torch.Tensor, b_mask: torch.Tensor):
     # TODO: unify the l_s calculation into a single function that also usable for regression task.
-
-    # Size: (B, num_labels)
-    logits = model(b_ids, b_mask)
-
     # Disable grad as we never going to update logits_tilde.
     with torch.no_grad():
         logits_tilde = model_tilde(b_ids, b_mask)
@@ -467,12 +476,12 @@ def train(args):
                             logits, b_labels.view(-1), reduction='sum') / args.batch_size
 
                         # Find the adversarial perturbation and add to loss (L6 - L10).
-                        perturb_loss = get_pertub_loss(
-                            model, b_ids, b_mask, b_labels, logits, args)
+                        perturb_loss = get_perturb_loss(
+                            model, b_ids, b_mask, logits, args, device)
 
-                        # Add trust region loss (equation 3 D_breg).
+                        # Add trust region loss (equation (3)'s D_breg).
                         breg_loss = get_bregmman_loss(
-                            model, model_tilde, b_ids, b_mask)
+                            model_tilde, logits, b_ids, b_mask)
 
                         loss = base_loss + args.lambda_s * perturb_loss + args.mu * breg_loss
 
@@ -607,6 +616,11 @@ def get_dataset_config(ds: str, args: Any):
             s=args.s,
             mu=args.mu,
             beta=args.beta,
+            sigma=args.sigma,
+            tx=args.tx,
+            eta=args.eta,
+            epsilon=args.epsilon,
+            lambda_s=args.lambda_s,
         ),
         "cfimdb": SimpleNamespace(
             filepath='cfimdb-classifier.pt',
@@ -630,6 +644,11 @@ def get_dataset_config(ds: str, args: Any):
             s=args.s,
             mu=args.mu,
             beta=args.beta,
+            sigma=args.sigma,
+            tx=args.tx,
+            eta=args.eta,
+            epsilon=args.epsilon,
+            lambda_s=args.lambda_s,
         ),
     }
 
