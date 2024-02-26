@@ -510,7 +510,7 @@ def train(args):
             save_model(model, optimizer, args, config, args.filepath)
 
         print(
-            f"Epoch {epoch}: train loss :: {train_loss :.3f}, train acc :: {train_acc :.3f}, dev acc :: {dev_acc :.3f}")
+            f"Epoch {epoch}: train loss :: {train_loss :.3f}, train acc :: {train_acc :.3f}, dev acc :: {dev_acc :.3f}, train f1 :: {train_f1 :.3f}, dev f1 :: {dev_f1 :.3f}")
 
 
 def test(args):
