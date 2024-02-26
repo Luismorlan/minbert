@@ -308,25 +308,35 @@ def save_model(model, optimizer, args, config, filepath):
 def get_pertub_loss(model: nn.Module, b_ids: torch.Tensor, b_mask: torch.Tensor, orginal_logits: torch.Tensor, args: Any):
     # In addition to the standard cross-entropy loss, we also add the SMART loss.
     # Compute the embedding of the batch
-    start_embeddings = model.embed(b_ids)
+    with torch.no_grad():
+        start_embeddings = model.embed(b_ids)
+
     # Perturb the embedding with Gaussian noise.
-    embeddings_perturbed = start_embeddings + \
+    embeddings_perturbed: torch.Tensor = start_embeddings + \
         torch.normal(0, args.sigma, start_embeddings.size())
-    # We need to compute the gradient w.r.t. the perturbed embedding to move it around
-    embeddings_perturbed.requires_grad = True
+
     # Loop until either tx iterations have been performed or the norm of the perturbation is greater than epsilon.
-    for it in range(args.tx):
-        # Forward the model
-        logits = model(embeddings_perturbed, b_mask, is_embedding=True)
+    for _ in range(args.tx):
+        # Compute the gradient of the loss with respect to the perturbed embedding.
+        embeddings_perturbed.requires_grad_()
+        logits = model(embeddings_perturbed, b_mask, forward_embedding=True)
+
         # Use symmetrizied KL divergence as the loss function.
-        loss_perturbed = F.kl_div(F.log_softmax(logits, dim=1), F.log_softmax(
-            orginal_logits, dim=1), reduction='batchmean', log_target=True)
-        loss_perturbed += F.kl_div(F.log_softmax(orginal_logits, dim=1), F.log_softmax(
-            logits, dim=1), reduction='batchmean', log_target=True)
-       # Note that for the final iteration, we actually don't need to compute the gradient w.r.t. the perturbed embedding, so we can break the loop here.
-        if it == args.tx - 1:
-            break
-        grad = torch.autograd.grad(loss_perturbed, embeddings_perturbed)[0]
+        # TODO: unify the l_s calculation into a single function that also usable for regression task.
+        loss_perturbed = F.kl_div(
+            F.log_softmax(logits, dim=-1),
+            F.log_softmax(orginal_logits, dim=-1),
+            reduction='batchmean',
+            log_target=True,
+        ) + F.kl_div(
+            F.log_softmax(orginal_logits, dim=-1),
+            F.log_softmax(logits, dim=-1),
+            reduction='batchmean',
+            log_target=True
+        )
+
+        grad = torch.autograd.grad(
+            loss_perturbed, embeddings_perturbed)[0]
         # Normalize the gradient by infinity norm
         grad = grad / (torch.norm(grad, float('inf')) + 1e-8)
         # Perform the SMART update.
@@ -335,6 +345,7 @@ def get_pertub_loss(model: nn.Module, b_ids: torch.Tensor, b_mask: torch.Tensor,
         embeddings_perturbed = start_embeddings + \
             torch.clamp(embeddings_perturbed - start_embeddings, -
                         args.epsilon, args.epsilon)
+
     return loss_perturbed
 
 
@@ -353,12 +364,11 @@ def get_bregmman_loss(model: nn.Module, model_tilde: nn.Module, b_ids: torch.Ten
         F.log_softmax(logits_tilde, dim=-1),
         reduction='batchmean',
         log_target=True,
-    ) + \
-        F.kl_div(
-            F.log_softmax(logits_tilde, dim=-1),
-            F.log_softmax(logits, dim=-1),
-            reduction='batchmean',
-            log_target=True
+    ) + F.kl_div(
+        F.log_softmax(logits_tilde, dim=-1),
+        F.log_softmax(logits, dim=-1),
+        reduction='batchmean',
+        log_target=True
     )
 
     return bregmman_loss
@@ -438,10 +448,10 @@ def train(args):
 
                     train_loss += loss.item()
                     num_batches += 1
-
+                    progress_bar.update(1)
                 else:
                     for _ in range(args.s):
-                        # Sample a mini-batch B from X
+                        # Sample a mini-batch B from X (L5)
                         batch = batch = next(train_iter)
                         b_ids, b_mask, b_labels = (batch['token_ids'],
                                                    batch['attention_mask'], batch['labels'])
@@ -451,7 +461,8 @@ def train(args):
 
                         optimizer.zero_grad()
 
-                        # TODO: Calculate regression loss.
+                        # TODO: also calculate regression loss.
+                        logits = model(b_ids, b_mask)
                         base_loss = F.cross_entropy(
                             logits, b_labels.view(-1), reduction='sum') / args.batch_size
 
@@ -470,8 +481,9 @@ def train(args):
 
                         train_loss += loss.item()
                         num_batches += 1
+                        progress_bar.update(1)
 
-                    # TODO: Update the model_tilde.
+                    # Update model tilde with momentum (L14).
                     update_model_tilde(model_tilde, model, args.beta)
 
             except StopIteration:
