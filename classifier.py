@@ -7,6 +7,7 @@ import argparse
 import torch.nn as nn
 from types import SimpleNamespace
 import csv
+import copy
 
 import torch
 import torch.nn.functional as F
@@ -304,28 +305,37 @@ def save_model(model, optimizer, args, config, filepath):
     print(f"save the model to {filepath}")
 
 
-def smart_loss(model: nn.Module, b_ids: torch.Tensor, b_mask: torch.Tensor, orginal_logits: torch.Tensor, args):
+def get_perturb_loss(model: nn.Module, b_ids: torch.Tensor, b_mask: torch.Tensor, orginal_logits: torch.Tensor, args: Any, device: Any):
     # In addition to the standard cross-entropy loss, we also add the SMART loss.
     # Compute the embedding of the batch
     start_embeddings = model.embed(b_ids)
+
     # Perturb the embedding with Gaussian noise.
-    embeddings_perturbed = start_embeddings + \
-        torch.normal(0, args.sigma, start_embeddings.size())
-    # We need to compute the gradient w.r.t. the perturbed embedding to move it around
-    embeddings_perturbed.requires_grad = True
+    embeddings_perturbed: torch.Tensor = start_embeddings + \
+        torch.normal(0, args.sigma, start_embeddings.size()).to(device)
+
     # Loop until either tx iterations have been performed or the norm of the perturbation is greater than epsilon.
-    for it in range(args.tx):
-        # Forward the model
+    for _ in range(args.tx):
+        # Compute the gradient of the loss with respect to the perturbed embedding.
+        embeddings_perturbed.requires_grad_()
         logits = model(embeddings_perturbed, b_mask, is_embedding=True)
+
         # Use symmetrizied KL divergence as the loss function.
-        loss_perturbed = F.kl_div(F.log_softmax(logits, dim=1), F.log_softmax(
-            orginal_logits, dim=1), reduction='batchmean', log_target=True)
-        loss_perturbed += F.kl_div(F.log_softmax(orginal_logits, dim=1), F.log_softmax(
-            logits, dim=1), reduction='batchmean', log_target=True)
-       # Note that for the final iteration, we actually don't need to compute the gradient w.r.t. the perturbed embedding, so we can break the loop here.
-        if it == args.tx - 1:
-            break
-        grad = torch.autograd.grad(loss_perturbed, embeddings_perturbed)[0]
+        # TODO: unify the l_s calculation into a single function that also usable for regression task.
+        loss_perturbed = F.kl_div(
+            F.log_softmax(logits, dim=-1),
+            F.log_softmax(orginal_logits, dim=-1),
+            reduction='batchmean',
+            log_target=True,
+        ) + F.kl_div(
+            F.log_softmax(orginal_logits, dim=-1),
+            F.log_softmax(logits, dim=-1),
+            reduction='batchmean',
+            log_target=True
+        )
+
+        grad = torch.autograd.grad(
+            loss_perturbed, embeddings_perturbed)[0]
         # Normalize the gradient by infinity norm
         grad = grad / (torch.norm(grad, float('inf')) + 1e-8)
         # Perform the SMART update.
@@ -334,7 +344,50 @@ def smart_loss(model: nn.Module, b_ids: torch.Tensor, b_mask: torch.Tensor, orgi
         embeddings_perturbed = start_embeddings + \
             torch.clamp(embeddings_perturbed - start_embeddings, -
                         args.epsilon, args.epsilon)
-    return loss_perturbed
+
+    # Calculating one more time for the final perturbatin loss, after we find
+    # the most adversarial perturbation.
+    logits = model(embeddings_perturbed, b_mask, is_embedding=True)
+
+    return F.kl_div(
+        F.log_softmax(logits, dim=-1),
+        F.log_softmax(orginal_logits, dim=-1),
+        reduction='batchmean',
+        log_target=True,
+    ) + F.kl_div(
+        F.log_softmax(orginal_logits, dim=-1),
+        F.log_softmax(logits, dim=-1),
+        reduction='batchmean',
+        log_target=True
+    )
+
+
+def get_bregmman_loss(model_tilde: nn.Module, logits: torch.Tensor, b_ids: torch.Tensor, b_mask: torch.Tensor):
+    # TODO: unify the l_s calculation into a single function that also usable for regression task.
+    # Disable grad as we never going to update logits_tilde.
+    with torch.no_grad():
+        logits_tilde = model_tilde(b_ids, b_mask)
+
+    bregmman_loss = F.kl_div(
+        F.log_softmax(logits, dim=-1),
+        F.log_softmax(logits_tilde, dim=-1),
+        reduction='batchmean',
+        log_target=True,
+    ) + F.kl_div(
+        F.log_softmax(logits_tilde, dim=-1),
+        F.log_softmax(logits, dim=-1),
+        reduction='batchmean',
+        log_target=True
+    )
+
+    return bregmman_loss
+
+
+def update_model_tilde(model_tilde: nn.Module, model: nn.Module, beta: float):
+    with torch.no_grad():
+        for param_tilde, param_update in zip(model_tilde.parameters(), model.parameters()):
+            param_tilde.mul_(beta)
+            param_tilde.add_(param_update, alpha=1 - beta)
 
 
 def train(args):
@@ -360,8 +413,12 @@ def train(args):
 
     config = SimpleNamespace(**config)
 
+    # TODO: Depends on the config. Use different type of model (classifier/regressor).
     model = BertSentimentClassifier(config)
     model = model.to(device)
+
+    # Initialize the initial \tilde{\theta_1} when training with SMART (L1 in the algorithm).
+    model_tilde = copy.deepcopy(model) if args.smart else None
 
     lr = args.lr
     optimizer = AdamW(model.parameters(), lr=lr)
@@ -372,29 +429,76 @@ def train(args):
         model.train()
         train_loss = 0
         num_batches = 0
-        for batch in tqdm(train_dataloader, desc=f'train-{epoch}', disable=TQDM_DISABLE):
-            b_ids, b_mask, b_labels = (batch['token_ids'],
-                                       batch['attention_mask'], batch['labels'])
 
-            b_ids = b_ids.to(device)
-            b_mask = b_mask.to(device)
-            b_labels = b_labels.to(device)
+        train_iter = iter(train_dataloader)
+        progress_bar = tqdm(total=len(train_dataloader),
+                            desc=f'train-{epoch}', disable=TQDM_DISABLE)
 
-            optimizer.zero_grad()
-            logits = model(b_ids, b_mask)
-            loss = F.cross_entropy(
-                logits, b_labels.view(-1), reduction='sum') / args.batch_size
+        while True:
+            try:
+                # TODO: Encapsulate both vanilla AdamW and SMART into a function.
+                if not args.smart:
+                    batch = next(train_iter)
+                    b_ids, b_mask, b_labels = (batch['token_ids'],
+                                               batch['attention_mask'], batch['labels'])
 
-            if args.smart:
-                # Add loss to the original loss.
-                loss += args.lambda_s * \
-                    smart_loss(model, b_ids, b_mask, logits, args)
+                    b_ids = b_ids.to(device)
+                    b_mask = b_mask.to(device)
+                    b_labels = b_labels.to(device)
+                    optimizer.zero_grad()
+                    logits = model(b_ids, b_mask)
 
-            loss.backward()
-            optimizer.step()
+                    # TODO: Also implement this for regression task.
+                    loss = F.cross_entropy(
+                        logits, b_labels.view(-1), reduction='sum') / args.batch_size
 
-            train_loss += loss.item()
-            num_batches += 1
+                    loss.backward()
+                    optimizer.step()
+
+                    train_loss += loss.item()
+                    num_batches += 1
+                    progress_bar.update(1)
+                else:
+                    for _ in range(args.s):
+                        # Sample a mini-batch B from X (L5)
+                        batch = batch = next(train_iter)
+                        b_ids, b_mask, b_labels = (batch['token_ids'],
+                                                   batch['attention_mask'], batch['labels'])
+                        b_ids = b_ids.to(device)
+                        b_mask = b_mask.to(device)
+                        b_labels = b_labels.to(device)
+
+                        optimizer.zero_grad()
+
+                        # TODO: also calculate regression loss.
+                        logits = model(b_ids, b_mask)
+                        base_loss = F.cross_entropy(
+                            logits, b_labels.view(-1), reduction='sum') / args.batch_size
+
+                        # Find the adversarial perturbation and add to loss (L6 - L10).
+                        perturb_loss = get_perturb_loss(
+                            model, b_ids, b_mask, logits, args, device)
+
+                        # Add trust region loss (equation (3)'s D_breg).
+                        breg_loss = get_bregmman_loss(
+                            model_tilde, logits, b_ids, b_mask)
+
+                        loss = base_loss + args.lambda_s * perturb_loss + args.mu * breg_loss
+
+                        loss.backward()
+                        optimizer.step()
+
+                        train_loss += loss.item()
+                        num_batches += 1
+                        progress_bar.update(1)
+
+                    # Update model tilde with momentum (L14).
+                    update_model_tilde(model_tilde, model, args.beta)
+
+            except StopIteration:
+                break
+
+        progress_bar.close()
 
         train_loss = train_loss / (num_batches)
 
@@ -406,7 +510,7 @@ def train(args):
             save_model(model, optimizer, args, config, args.filepath)
 
         print(
-            f"Epoch {epoch}: train loss :: {train_loss :.3f}, train acc :: {train_acc :.3f}, dev acc :: {dev_acc :.3f}")
+            f"Epoch {epoch}: train loss :: {train_loss :.3f}, train acc :: {train_acc :.3f}, dev acc :: {dev_acc :.3f}, train f1 :: {train_f1 :.3f}, dev f1 :: {dev_f1 :.3f}")
 
 
 def test(args):
@@ -473,8 +577,15 @@ def get_args():
                         help='eta for the SMART update, only used when --smart is True')
     parser.add_argument("--tx", type=int, default=1,
                         help='Iteration size of x for the SMART update, only used when --smart is True')
+    parser.add_argument("--s", type=int, default=1,
+                        help='Iteration size of S for the SMART update, only used when --smart is True. This is to perform update within the trust region.')
     parser.add_argument("--dataset", nargs="*", choices=[
                         'sst', 'cfimdb', 'quora', 'semeval'], default=["sst", "cfimdb"], help="List of datasets that can be used to train or finetune.")
+    parser.add_argument("--mu", type=float,
+                        help="Coefficient for Bregmma loss", default=1)
+    # TODO: use a rate schedule for beta. In the paper it is decreasing to 0.999 after 10% of training.
+    parser.add_argument(
+        "--beta", type=float, help="Coefficient for momentum of theta tilde", default=0.99)
 
     args = parser.parse_args()
     return args
@@ -501,7 +612,10 @@ def get_dataset_config(ds: str, args: Any):
             sigma=args.sigma,
             epsilon=args.epsilon,
             eta=args.eta,
-            tx=args.tx
+            tx=args.tx,
+            s=args.s,
+            mu=args.mu,
+            beta=args.beta,
         ),
         "cfimdb": SimpleNamespace(
             filepath='cfimdb-classifier.pt',
@@ -521,7 +635,10 @@ def get_dataset_config(ds: str, args: Any):
             sigma=args.sigma,
             epsilon=args.epsilon,
             eta=args.eta,
-            tx=args.tx
+            tx=args.tx,
+            s=args.s,
+            mu=args.mu,
+            beta=args.beta,
         ),
     }
 
