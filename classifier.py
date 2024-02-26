@@ -386,8 +386,8 @@ def get_bregmman_loss(model_tilde: nn.Module, logits: torch.Tensor, b_ids: torch
 def update_model_tilde(model_tilde: nn.Module, model: nn.Module, beta: float):
     with torch.no_grad():
         for param_tilde, param_update in zip(model_tilde.parameters(), model.parameters()):
-            param_tilde.mul_(1 - beta)
-            param_tilde.add_(param_update, alpha=beta)
+            param_tilde.mul_(beta)
+            param_tilde.add_(param_update, alpha=1 - beta)
 
 
 def train(args):
@@ -612,15 +612,10 @@ def get_dataset_config(ds: str, args: Any):
             sigma=args.sigma,
             epsilon=args.epsilon,
             eta=args.eta,
-            tx=args.tx
+            tx=args.tx,
             s=args.s,
             mu=args.mu,
             beta=args.beta,
-            sigma=args.sigma,
-            tx=args.tx,
-            eta=args.eta,
-            epsilon=args.epsilon,
-            lambda_s=args.lambda_s,
         ),
         "cfimdb": SimpleNamespace(
             filepath='cfimdb-classifier.pt',
@@ -640,15 +635,10 @@ def get_dataset_config(ds: str, args: Any):
             sigma=args.sigma,
             epsilon=args.epsilon,
             eta=args.eta,
-            tx=args.tx
+            tx=args.tx,
             s=args.s,
             mu=args.mu,
             beta=args.beta,
-            sigma=args.sigma,
-            tx=args.tx,
-            eta=args.eta,
-            epsilon=args.epsilon,
-            lambda_s=args.lambda_s,
         ),
     }
 
