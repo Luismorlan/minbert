@@ -570,16 +570,28 @@ def train(args):
 
         train_loss = train_loss / (num_batches)
 
-        train_acc, train_f1, * \
-            _ = model_eval(train_dataloader, model, device, args)
-        dev_acc, dev_f1, *_ = model_eval(dev_dataloader, model, device, args)
+        if args.task_type == "classifier":
+            train_acc, train_f1, * \
+                _ = model_eval(train_dataloader, model, device, args)
+            dev_acc, dev_f1, *_ = model_eval(dev_dataloader, model, device, args)
 
-        if dev_acc > best_dev_acc:
-            best_dev_acc = dev_acc
-            save_model(model, optimizer, args, config, args.filepath)
+            if dev_acc > best_dev_acc:
+                best_dev_acc = dev_acc
+                save_model(model, optimizer, args, config, args.filepath)
 
-        print(
-            f"Epoch {epoch}: train loss :: {train_loss :.3f}, train acc :: {train_acc :.3f}, dev acc :: {dev_acc :.3f}, train f1 :: {train_f1 :.3f}, dev f1 :: {dev_f1 :.3f}")
+            print(
+                f"Epoch {epoch}: train loss :: {train_loss :.3f}, train acc :: {train_acc :.3f}, dev acc :: {dev_acc :.3f}, train f1 :: {train_f1 :.3f}, dev f1 :: {dev_f1 :.3f}")
+        else:
+            train_mse, train_r2, * \
+                _ = model_eval(train_dataloader, model, device, args)
+            dev_mse, dev_r2, *_ = model_eval(dev_dataloader, model, device, args)
+
+            if dev_mse < best_dev_acc:
+                best_dev_acc = dev_mse
+                save_model(model, optimizer, args, config, args.filepath)
+
+            print(
+                f"Epoch {epoch}: train loss :: {train_loss :.3f}, train mse :: {train_mse :.3f}, dev mse :: {dev_mse :.3f}, train r2 :: {train_r2 :.3f}, dev r2 :: {dev_r2 :.3f}")
 
 
 def test(args):
