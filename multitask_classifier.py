@@ -18,6 +18,8 @@ import argparse
 from types import SimpleNamespace
 from typing import Any, Callable, List
 from abc import ABC, abstractmethod
+from itertools import cycle
+import copy
 
 import torch
 from torch import nn
@@ -26,6 +28,9 @@ from torch.utils.data import DataLoader
 
 from bert import BertModel
 from optimizer import AdamW
+from task import TQDM_DISABLE, Task, SentimentClassificationTask, ParaphraseDetectionTask, SemanticTextualSimilarityTask
+from loss import update_model_tilde
+
 from tqdm import tqdm
 
 from datasets import (
@@ -36,11 +41,7 @@ from datasets import (
     load_multitask_data
 )
 
-from evaluation import model_eval_sst, model_eval_multitask, model_eval_test_multitask
-from classifier import l_s, get_bregmman_loss, get_perturb_loss
-
-
-TQDM_DISABLE = False
+from evaluation import model_eval_multitask, model_eval_test_multitask
 
 
 # Fix the random seed.
@@ -102,13 +103,13 @@ class MultitaskBERT(nn.Module):
 
         return res
 
-    def predict_sentiment(self, input_ids, attention_mask):
+    def predict_sentiment(self, ids_or_embedding, attention_mask, is_embedding=False):
         '''Given a batch of sentences, outputs logits for classifying sentiment.
         There are 5 sentiment classes:
         (0 - negative, 1- somewhat negative, 2- neutral, 3- somewhat positive, 4- positive)
         Thus, your output should contain 5 logits for each sentence.
         '''
-        res = self.forward(input_ids, attention_mask)
+        res = self.forward(ids_or_embedding, attention_mask, is_embedding=is_embedding)
 
         # Size: (B, C)
         pooler_output = res["pooler_output"]
@@ -116,14 +117,15 @@ class MultitaskBERT(nn.Module):
         return self.sent_linear(pooler_output)
 
     def predict_paraphrase(self,
-                           input_ids_1, attention_mask_1,
-                           input_ids_2, attention_mask_2):
+                           ids_or_embedding_1, attention_mask_1,
+                           ids_or_embedding_2, attention_mask_2,
+                           is_embedding=False):
         '''Given a batch of pairs of sentences, outputs a single logit for predicting whether they are paraphrases.
         Note that your output should be unnormalized (a logit); it will be passed to the sigmoid function
         during evaluation.
         '''
-        res1 = self.forward(input_ids_1, attention_mask_1)
-        res2 = self.forward(input_ids_2, attention_mask_2)
+        res1 = self.forward(ids_or_embedding_1, attention_mask_1, is_embedding=is_embedding)
+        res2 = self.forward(ids_or_embedding_2, attention_mask_2, is_embedding=is_embedding)
 
         # Size: (B, 2*C)
         pooler_output_1 = res1["pooler_output"]
@@ -153,165 +155,6 @@ class MultitaskBERT(nn.Module):
 
         return self.sts_linear(combined)
 
-# Task is an abstraction for the training and evaluation of a model on a dataset.
-class Task(ABC):
-    def __init__(self, train_dataloader, dev_dataloader) -> None:
-        super().__init__()
-        self.train_dataloader = train_dataloader
-        self.dev_dataloader = dev_dataloader
-
-    @abstractmethod
-    def loss(self, model, batch, device):
-        ...
-
-    @abstractmethod
-    def eval(self, model, dataloader, device):
-        ...
-
-class SentimentClassificationTask(Task):
-    def loss(self, model, batch, device):
-        b_ids, b_mask, b_labels = (batch['token_ids'],
-                                batch['attention_mask'], batch['labels'])
-
-        b_ids = b_ids.to(device)
-        b_mask = b_mask.to(device)
-        b_labels = b_labels.to(device)
-
-        logits = model.predict_sentiment(b_ids, b_mask)
-        loss = F.cross_entropy(
-            logits, b_labels.view(-1), reduction='sum') / args.batch_size
-
-        return loss
-    
-
-    def eval(self, model, dataloader, device):
-        with torch.no_grad():
-            sst_y_true = []
-            sst_y_pred = []
-            sst_sent_ids = []
-            for step, batch in enumerate(tqdm(dataloader, desc=f'eval', disable=TQDM_DISABLE)):
-                b_ids, b_mask, b_labels, b_sent_ids = batch['token_ids'], batch['attention_mask'], batch['labels'], batch['sent_ids']
-
-                b_ids = b_ids.to(device)
-                b_mask = b_mask.to(device)
-
-                logits = model.predict_sentiment(b_ids, b_mask)
-                y_hat = logits.argmax(dim=-1).flatten().cpu().numpy()
-                b_labels = b_labels.flatten().cpu().numpy()
-
-                sst_y_pred.extend(y_hat)
-                sst_y_true.extend(b_labels)
-                sst_sent_ids.extend(b_sent_ids)
-
-            sentiment_accuracy = np.mean(np.array(sst_y_pred) == np.array(sst_y_true))
-
-            print(f"    sentiment acc :: {sentiment_accuracy :.3f}")
-        return sentiment_accuracy
-    
-
-class ParaphraseDetectionTask(Task):
-    def loss(self, model, batch, device):
-        b_ids_1, b_mask_1, b_ids_2, b_mask_2, b_labels = (batch['token_ids_1'],
-                                                    batch['attention_mask_1'], batch['token_ids_2'],
-                                                    batch['attention_mask_2'], batch['labels'])
-
-        b_ids_1 = b_ids_1.to(device)
-        b_mask_1 = b_mask_1.to(device)
-        b_ids_2 = b_ids_2.to(device)
-        b_mask_2 = b_mask_2.to(device)
-        b_labels = b_labels.to(device)
-
-        logits = model.predict_paraphrase(
-            b_ids_1, b_mask_1, b_ids_2, b_mask_2)
-        try:
-            loss = F.cross_entropy(
-            logits, b_labels.view(-1), reduction='sum') / args.batch_size
-        except:
-            import pdb; pdb.set_trace()
-            print('error')
-            raise
-
-        return loss
-    
-
-    def eval(self, model, dataloader, device):
-        with torch.no_grad():
-            para_y_true = []
-            para_y_pred = []
-            para_sent_ids = []
-            for step, batch in enumerate(tqdm(dataloader, desc=f'eval', disable=TQDM_DISABLE)):
-                (b_ids1, b_mask1,
-                b_ids2, b_mask2,
-                b_labels, b_sent_ids) = (batch['token_ids_1'], batch['attention_mask_1'],
-                            batch['token_ids_2'], batch['attention_mask_2'],
-                            batch['labels'], batch['sent_ids'])
-
-                b_ids1 = b_ids1.to(device)
-                b_mask1 = b_mask1.to(device)
-                b_ids2 = b_ids2.to(device)
-                b_mask2 = b_mask2.to(device)
-
-                logits = model.predict_paraphrase(b_ids1, b_mask1, b_ids2, b_mask2)
-                y_hat = logits.sigmoid().round().flatten().cpu().numpy()
-                b_labels = b_labels.flatten().cpu().numpy()
-
-                para_y_pred.extend(y_hat)
-                para_y_true.extend(b_labels)
-                para_sent_ids.extend(b_sent_ids)
-
-            paraphrase_accuracy = np.mean(np.array(para_y_pred) == np.array(para_y_true))
-            print(f"    paraphrase acc :: {paraphrase_accuracy :.3f}")
-        return paraphrase_accuracy
-
-
-class SemanticTextualSimilarityTask(Task):
-    def loss(self, model, batch, device):
-        b_ids_1, b_mask_1, b_ids_2, b_mask_2, b_labels = (batch['token_ids_1'],
-                                                    batch['attention_mask_1'], batch['token_ids_2'],
-                                                    batch['attention_mask_2'], batch['labels'])
-
-        b_ids_1 = b_ids_1.to(device)
-        b_mask_1 = b_mask_1.to(device)
-        b_ids_2 = b_ids_2.to(device)
-        b_mask_2 = b_mask_2.to(device)
-        b_labels = b_labels.to(device)
-
-        logits = model.predict_similarity(
-            b_ids_1, b_mask_1, b_ids_2, b_mask_2)
-        loss = F.mse_loss(logits.view(-1), b_labels.view(-1), reduction='sum') / args.batch_size
-
-        return loss
-    
-    def eval(self, model, dataloader, device):
-        with torch.no_grad():
-            sts_y_true = []
-            sts_y_pred = []
-            sts_sent_ids = []
-            for step, batch in enumerate(tqdm(dataloader, desc=f'eval', disable=TQDM_DISABLE)):
-                (b_ids1, b_mask1,
-                b_ids2, b_mask2,
-                b_labels, b_sent_ids) = (batch['token_ids_1'], batch['attention_mask_1'],
-                            batch['token_ids_2'], batch['attention_mask_2'],
-                            batch['labels'], batch['sent_ids'])
-
-                b_ids1 = b_ids1.to(device)
-                b_mask1 = b_mask1.to(device)
-                b_ids2 = b_ids2.to(device)
-                b_mask2 = b_mask2.to(device)
-
-                logits = model.predict_similarity(b_ids1, b_mask1, b_ids2, b_mask2)
-                y_hat = logits.flatten().cpu().numpy()
-                b_labels = b_labels.flatten().cpu().numpy()
-
-                sts_y_pred.extend(y_hat)
-                sts_y_true.extend(b_labels)
-                sts_sent_ids.extend(b_sent_ids)
-
-            sts_corr = np.corrcoef(sts_y_true, sts_y_pred)[0, 1]
-
-        print(f"    similarity corr :: {sts_corr :.3f}")
-        return sts_corr
-
 
 class Trainer:
     def __init__(self, args: Any, config: SimpleNamespace, tasks: List[Task]) -> None:
@@ -329,28 +172,62 @@ class Trainer:
         train_dataloaders = [task.train_dataloader for task in self.tasks]
         dev_dataloaders = [task.dev_dataloader for task in self.tasks]
 
+        max_len, longest_dl = max([(len(dl), dl) for dl in train_dataloaders], key=lambda x: x[0])
+        train_dataloaders = [cycle(dl) if dl != longest_dl else dl for dl in train_dataloaders]
+        model_tilde = copy.deepcopy(model) if args.smart else None
+
         for epoch in range(self.args.epochs):
             num_batches = 0
             train_loss = 0
+
+            progress_bar = tqdm(range(self.args.epochs), desc=f'train-{epoch}', disable=TQDM_DISABLE, total=max_len)
             # we zip the dataloaders together to train on all tasks at the same time
-            for batches in tqdm(zip(*train_dataloaders), desc=f'train-{epoch}', disable=TQDM_DISABLE):
-                loss = None
-                optimizer.zero_grad()
+            train_iter = iter(zip(*train_dataloaders))
 
-                for batch, task in zip(batches, self.tasks):
-                    # import pdb; pdb.set_trace()
-                    loss = task.loss(model, batch, device) if loss is None else loss + task.loss(model, batch, device)
+            # import pdb; pdb.set_trace()
 
-                loss.backward()
-                optimizer.step()
+            while True:
+                try:
+                    if not args.smart:
+                        batches = next(train_iter)
+                        loss = 0
+                        optimizer.zero_grad()
+                        for batch, task in zip(batches, self.tasks):
+                            loss += task.loss(model, batch, device)
 
-                train_loss += loss.item()
-                num_batches += 1
+                        loss.backward()
+                        optimizer.step()
+
+                        train_loss += loss.item()
+                        num_batches += 1
+                        progress_bar.update(1)
+                    else:
+                        for _ in range(args.s):
+                            loss = 0
+                            optimizer.zero_grad()
+                            batches = next(train_iter)
+                            for batch, task in zip(batches, self.tasks):
+                                loss += task.loss(model, batch, device)
+                                loss += args.lambda_s * task.perturbed_loss(model, batch, device)
+                                loss += args.mu * task.get_bregmman_loss(model, batch, device)
+
+                            loss.backward()
+                            optimizer.step()
+                            train_loss += loss.item()
+                            num_batches += 1
+                            progress_bar.update(1)
+
+                        update_model_tilde(model_tilde, model, args.beta)
+
+                except StopIteration:
+                    break
+
+            progress_bar.close()
             
             train_loss = train_loss / (num_batches)
 
             print(f"Epoch {epoch}:\n train loss :: {train_loss :.3f}")
-            for i, task, train_dataloader, dev_dataloader in enumerate(zip(self.tasks, train_dataloaders, dev_dataloaders)):
+            for i, (task, train_dataloader, dev_dataloader) in enumerate(zip(self.tasks, train_dataloaders, dev_dataloaders)):
                 task.eval(model, train_dataloader, device)
                 acc_dev[i] = task.eval(model, dev_dataloader, device)
 
@@ -411,9 +288,9 @@ def train_multitask(args):
     sts_dev_dataloader = DataLoader(sts_dev_data, shuffle=False, batch_size=args.batch_size,
                                     collate_fn=sts_dev_data.collate_fn)
     # Init tasks
-    sst_task = SentimentClassificationTask(sst_train_dataloader, sst_dev_dataloader)
-    para_task = ParaphraseDetectionTask(para_train_dataloader, para_dev_dataloader)
-    sts_task = SemanticTextualSimilarityTask(sts_train_dataloader, sts_dev_dataloader)
+    sst_task = SentimentClassificationTask(args, sst_train_dataloader, sst_dev_dataloader)
+    para_task = ParaphraseDetectionTask(args, para_train_dataloader, para_dev_dataloader)
+    sts_task = SemanticTextualSimilarityTask(args, sts_train_dataloader, sts_dev_dataloader)
 
 
     # Init model.
@@ -572,6 +449,32 @@ def get_args():
         "--batch_size", help='sst: 64, cfimdb: 8 can fit a 12GB GPU', type=int, default=8)
     parser.add_argument("--hidden_dropout_prob", type=float, default=0.3)
     parser.add_argument("--lr", type=float, help="learning rate", default=1e-5)
+    parser.add_argument("--smart", type=bool, default=False,
+                        help='use SMART (https://arxiv.org/abs/1911.03437) update to fine-tune the model')
+    parser.add_argument("--lambda_s", type=float, default=1.0,
+                        help='lambda_s for the SMART update, only used when --smart is True')
+    parser.add_argument("--sigma", type=float, default=1e-5,
+                        help='sigma for the SMART update, only used when --smart is True')
+    parser.add_argument("--epsilon", type=float, default=1e-5,
+                        help='epsilon for the SMART update, only used when --smart is True')
+    parser.add_argument("--eta", type=float, default=1e-3,
+                        help='eta for the SMART update, only used when --smart is True')
+    parser.add_argument("--tx", type=int, default=1,
+                        help='Iteration size of x for the SMART update, only used when --smart is True')
+    parser.add_argument("--s", type=int, default=1,
+                        help='Iteration size of S for the SMART update, only used when --smart is True. This is to perform update within the trust region.')
+    parser.add_argument("--dataset", nargs="*", choices=[
+                        'sst', 'cfimdb', 'quora', 'semeval'], default=["sst", "cfimdb"], help="List of datasets that can be used to train or finetune.")
+    parser.add_argument("--mu", type=float,
+                        help="Coefficient for Bregmma loss", default=1)
+    # TODO: use a rate schedule for beta. In the paper it is decreasing to 0.999 after 10% of training.
+    parser.add_argument(
+        "--beta", type=float, help="Coefficient for momentum of theta tilde", default=0.99)
+    # TODO: actually implement this
+    parser.add_argument("--contrastive", type=bool, default=False,
+                        help="Use contrastive loss fromm https://arxiv.org/pdf/2104.08821.pdf")
+    parser.add_argument(
+        "--tau", type=float, help="Tau coefficient for the contrastive loss", default=0.1)
 
     args = parser.parse_args()
     return args
