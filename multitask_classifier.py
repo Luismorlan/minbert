@@ -162,10 +162,9 @@ class Trainer:
         self.config = config
         self.tasks = tasks
 
-    def train(self, model: nn.Module):
+    def train(self, model: nn.Module, device: str):
         best_dev_metrics = [0,] * len(self.tasks) # higher the better
         acc_dev = [0,] * len(self.tasks) # higher the better
-        device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
         optimizer = AdamW(model.parameters(), lr=self.args.lr)
         model.train()
 
@@ -307,7 +306,7 @@ def train_multitask(args):
     trainer = Trainer(args, config, [sst_task, para_task, sts_task])
 
     # Train
-    trainer.train(model)
+    trainer.train(model, device)
 
 
 
