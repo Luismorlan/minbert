@@ -448,7 +448,7 @@ def standard_loss(output, b_labels, args):
         return F.cross_entropy(
             output, b_labels.view(-1), reduction='sum') / args.batch_size
     elif args.task_type == "regressor":
-        return F.mse_loss(output, b_labels.view(-1), reduction='sum') / args.batch_size
+        return F.mse_loss(output.view(-1), b_labels.view(-1), reduction='sum') / args.batch_size
 
 
 def pick_dataset(args, mode):
