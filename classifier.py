@@ -599,7 +599,10 @@ def test(args):
         device = torch.device('cuda') if args.use_gpu else torch.device('cpu')
         saved = torch.load(args.filepath)
         config = saved['model_config']
-        model = BertSentimentClassifier(config)
+        if args.task_type == "classifier":
+            model = BertSentimentClassifier(config)
+        elif args.task_type == "regressor":
+            model = BertRegressor(config)
         model.load_state_dict(saved['model'])
         model = model.to(device)
         print(f"load model from {args.filepath}")
