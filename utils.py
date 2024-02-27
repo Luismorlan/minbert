@@ -16,6 +16,8 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 import fnmatch
+import time
+import shutil
 
 __version__ = "4.0.0"
 _torch_version = importlib_metadata.version("torch")
@@ -361,3 +363,15 @@ def get_extended_attention_mask(attention_mask: Tensor, dtype) -> Tensor:
         dtype=dtype)  # fp16 compatibility
     extended_attention_mask = (1.0 - extended_attention_mask) * -10000.0
     return extended_attention_mask
+
+
+class Timer:
+    def __enter__(self, name):
+        self.name = name
+        self.start = time.time()
+        return self
+
+    def __exit__(self, *args):
+        self.end = time.time()
+        self.interval = self.end - self.start
+        print(f'Elapsed time for {self.name}: {self.interval} seconds')
