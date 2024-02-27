@@ -273,17 +273,17 @@ def train_multitask(args):
     sts_dev_data = SentencePairDataset(sts_dev_data, args, isRegression=True)
 
     sst_train_dataloader = DataLoader(sst_train_data, shuffle=True, batch_size=args.batch_size,
-                                      collate_fn=sst_train_data.collate_fn)
+                                      collate_fn=sst_train_data.collate_fn, num_workers=2)
     sst_dev_dataloader = DataLoader(sst_dev_data, shuffle=False, batch_size=args.batch_size,
-                                    collate_fn=sst_dev_data.collate_fn)
+                                    collate_fn=sst_dev_data.collate_fn, num_workers=2)
     para_train_dataloader = DataLoader(para_train_data, shuffle=True, batch_size=args.batch_size,
-                                       collate_fn=para_train_data.collate_fn)
+                                       collate_fn=para_train_data.collate_fn, num_workers=2)
     para_dev_dataloader = DataLoader(para_dev_data, shuffle=False, batch_size=args.batch_size,
-                                     collate_fn=para_dev_data.collate_fn)
+                                     collate_fn=para_dev_data.collate_fn, num_workers=2)
     sts_train_dataloader = DataLoader(sts_train_data, shuffle=True, batch_size=args.batch_size,
-                                      collate_fn=sts_train_data.collate_fn)
+                                      collate_fn=sts_train_data.collate_fn, num_workers=2)
     sts_dev_dataloader = DataLoader(sts_dev_data, shuffle=False, batch_size=args.batch_size,
-                                    collate_fn=sts_dev_data.collate_fn)
+                                    collate_fn=sts_dev_data.collate_fn, num_workers=2)
     # Init tasks
     sst_task = SentimentClassificationTask(args, sst_train_dataloader, sst_dev_dataloader)
     para_task = ParaphraseDetectionTask(args, para_train_dataloader, para_dev_dataloader)
