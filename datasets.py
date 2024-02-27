@@ -129,7 +129,7 @@ class SentencePairDataset(Dataset):
         attention_mask2 = torch.LongTensor(encoding2['attention_mask'])
         token_type_ids2 = torch.LongTensor(encoding2['token_type_ids'])
         if self.isRegression:
-            labels = torch.DoubleTensor(labels)
+            labels = torch.FloatTensor(labels)
         else:
             labels = torch.LongTensor(labels)
 
@@ -269,4 +269,4 @@ def load_multitask_data(sentiment_filename,paraphrase_filename,similarity_filena
 
     print(f"Loaded {len(similarity_data)} {split} examples from {similarity_filename}")
 
-    return sentiment_data, num_labels, paraphrase_data, similarity_data
+    return sentiment_data, len(num_labels), paraphrase_data, similarity_data

@@ -445,6 +445,7 @@ def update_model_tilde(model_tilde: nn.Module, model: nn.Module, beta: float):
 
 def standard_loss(output, b_labels, args):
     if args.task_type == "classifier":
+        import pdb; pdb.set_trace()
         return F.cross_entropy(
             output, b_labels.view(-1), reduction='sum') / args.batch_size
     elif args.task_type == "regressor":
