@@ -12,7 +12,7 @@ import copy
 import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
-from sklearn.metrics import f1_score, accuracy_score
+from sklearn.metrics import f1_score, accuracy_score, mean_squared_error, r2_score
 
 from tokenizer import BertTokenizer
 from bert import BertModel
@@ -117,7 +117,8 @@ class BertRegressor(torch.nn.Module):
         # HINT: You should consider what is an appropriate return value given that
         # the training loop currently uses F.cross_entropy as the loss function.
         if is_embedding:
-            res = self.bert.forward_with_embedding(ids_or_embedding, attention_mask)
+            res = self.bert.forward_with_embedding(
+                ids_or_embedding, attention_mask)
         else:
             res = self.bert(ids_or_embedding, attention_mask)
 
@@ -268,7 +269,7 @@ def load_data(args, mode='train'):
 
 
 # Evaluate the model on dev examples.
-def model_eval(dataloader, model, device):
+def model_eval(dataloader, model, device, args):
     # Switch to eval model, will turn off randomness like dropout.
     model.eval()
     y_true = []
@@ -276,45 +277,78 @@ def model_eval(dataloader, model, device):
     sents = []
     sent_ids = []
     for step, batch in enumerate(tqdm(dataloader, desc=f'eval', disable=TQDM_DISABLE)):
-        b_ids, b_mask, b_labels, b_sents, b_sent_ids = batch['token_ids'], batch['attention_mask'],  \
-            batch['labels'], batch['sents'], batch['sent_ids']
+        if args.dataset == 'semeval' or args.dataset == 'quora':
+            b_ids, b_type_ids, b_mask, b_labels, b_sents1, b_sents2, b_sent_ids = batch['token_ids'], batch['token_type_ids'], batch['attention_mask'],  \
+                batch['labels'], batch['sents1'], batch['sents2'], batch['sent_ids']
+            b_ids = b_ids.to(device)
+            b_mask = b_mask.to(device)
 
-        b_ids = b_ids.to(device)
-        b_mask = b_mask.to(device)
+            output = model(b_ids, b_mask)
+            preds = output.detach().cpu().numpy()
 
-        logits = model(b_ids, b_mask)
-        logits = logits.detach().cpu().numpy()
-        preds = np.argmax(logits, axis=1).flatten()
+            b_labels = b_labels.flatten()
+            y_true.extend(b_labels)
+            y_pred.extend(preds)
+            sents.extend(b_sents1)
+            sents.extend(b_sents2)
+            sent_ids.extend(b_sent_ids)
 
-        b_labels = b_labels.flatten()
-        y_true.extend(b_labels)
-        y_pred.extend(preds)
-        sents.extend(b_sents)
-        sent_ids.extend(b_sent_ids)
+            mse = mean_squared_error(y_true, y_pred)
+            r2 = r2_score(y_true, y_pred)
 
-    f1 = f1_score(y_true, y_pred, average='macro')
-    acc = accuracy_score(y_true, y_pred)
+            return mse, r2, y_pred, y_true, sents, sent_ids
 
-    return acc, f1, y_pred, y_true, sents, sent_ids
+        else:
+            b_ids, b_mask, b_labels, b_sents, b_sent_ids = batch['token_ids'], batch['attention_mask'],  \
+                batch['labels'], batch['sents'], batch['sent_ids']
+
+            b_ids = b_ids.to(device)
+            b_mask = b_mask.to(device)
+
+            logits = model(b_ids, b_mask)
+            logits = logits.detach().cpu().numpy()
+            preds = np.argmax(logits, axis=1).flatten()
+
+            b_labels = b_labels.flatten()
+            y_true.extend(b_labels)
+            y_pred.extend(preds)
+            sents.extend(b_sents)
+            sent_ids.extend(b_sent_ids)
+
+            f1 = f1_score(y_true, y_pred, average='macro')
+            acc = accuracy_score(y_true, y_pred)
+
+        return acc, f1, y_pred, y_true, sents, sent_ids
 
 
 # Evaluate the model on test examples.
-def model_test_eval(dataloader, model, device):
+def model_test_eval(dataloader, model, device, args):
     # Switch to eval model, will turn off randomness like dropout.
     model.eval()
     y_pred = []
     sents = []
     sent_ids = []
     for step, batch in enumerate(tqdm(dataloader, desc=f'eval', disable=TQDM_DISABLE)):
-        b_ids, b_mask, b_sents, b_sent_ids = batch['token_ids'], batch['attention_mask'],  \
-            batch['sents'], batch['sent_ids']
+        if args.dataset == 'semeval' or args.dataset == 'quora':
+            b_ids, b_type_ids, b_mask, b_labels, b_sents1, b_sents2, b_sent_ids = batch['token_ids'], batch['token_type_ids'], batch['attention_mask'],  \
+                batch['labels'], batch['sents1'], batch['sents2'], batch['sent_ids']
+            b_sents = b_sents1 + b_sents2
+            b_ids = b_ids.to(device)
+            b_mask = b_mask.to(device)
 
-        b_ids = b_ids.to(device)
-        b_mask = b_mask.to(device)
+            output = model(b_ids, b_mask)
+            preds = output.detach().cpu().numpy()
 
-        logits = model(b_ids, b_mask)
-        logits = logits.detach().cpu().numpy()
-        preds = np.argmax(logits, axis=1).flatten()
+        else:
+            b_ids, b_mask, b_sents, b_sent_ids = batch['token_ids'], batch['attention_mask'],  \
+                batch['sents'], batch['sent_ids']
+
+            b_ids = b_ids.to(device)
+            b_mask = b_mask.to(device)
+
+            logits = model(b_ids, b_mask)
+            logits = logits.detach().cpu().numpy()
+            preds = np.argmax(logits, axis=1).flatten()
 
         y_pred.extend(preds)
         sents.extend(b_sents)
@@ -431,7 +465,7 @@ def pick_dataset(args, mode):
 def train(args):
     device = torch.device('cuda') if args.use_gpu else torch.device('cpu')
     # Create the data and its corresponding datasets and dataloader.
-    
+
     train_dataset, num_labels = pick_dataset(args, 'train')
     dev_dataset, _ = pick_dataset(args, 'valid')
 
@@ -536,8 +570,9 @@ def train(args):
 
         train_loss = train_loss / (num_batches)
 
-        train_acc, train_f1, *_ = model_eval(train_dataloader, model, device)
-        dev_acc, dev_f1, *_ = model_eval(dev_dataloader, model, device)
+        train_acc, train_f1, * \
+            _ = model_eval(train_dataloader, model, device, args)
+        dev_acc, dev_f1, *_ = model_eval(dev_dataloader, model, device, args)
 
         if dev_acc > best_dev_acc:
             best_dev_acc = dev_acc
@@ -556,7 +591,7 @@ def test(args):
         model.load_state_dict(saved['model'])
         model = model.to(device)
         print(f"load model from {args.filepath}")
-        
+
         dev_dataset, _ = pick_dataset(args, 'valid')
         dev_dataloader = DataLoader(
             dev_dataset, shuffle=False, batch_size=args.batch_size, collate_fn=dev_dataset.collate_fn)
@@ -566,10 +601,10 @@ def test(args):
             test_dataset, shuffle=False, batch_size=args.batch_size, collate_fn=test_dataset.collate_fn)
 
         dev_acc, dev_f1, dev_pred, dev_true, dev_sents, dev_sent_ids = model_eval(
-            dev_dataloader, model, device)
+            dev_dataloader, model, device, args)
         print('DONE DEV')
         test_pred, test_sents, test_sent_ids = model_test_eval(
-            test_dataloader, model, device)
+            test_dataloader, model, device, args)
         print('DONE Test')
         with open(args.dev_out, "w+") as f:
             print(f"dev acc :: {dev_acc :.3f}")
