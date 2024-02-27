@@ -131,10 +131,11 @@ class BertRegressor(torch.nn.Module):
         return 5 * torch.sigmoid(out)
 
 
-class SentimentDataset(Dataset):
-    def __init__(self, dataset, args):
+class BaseDataSets(Dataset):
+    def __init__(self, dataset, args, is_test=False):
         self.dataset = dataset
         self.p = args
+        self.is_test = is_test
         self.tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
 
     def __len__(self):
@@ -143,6 +144,8 @@ class SentimentDataset(Dataset):
     def __getitem__(self, idx):
         return self.dataset[idx]
 
+
+class SentimentDataset(BaseDataSets):
     def pad_data(self, data):
         sents = [x[0] for x in data]
         labels = [x[1] for x in data]
@@ -152,86 +155,112 @@ class SentimentDataset(Dataset):
             sents, return_tensors='pt', padding=True, truncation=True)
         token_ids = torch.LongTensor(encoding['input_ids'])
         attention_mask = torch.LongTensor(encoding['attention_mask'])
-        labels = torch.LongTensor(labels)
 
-        return token_ids, attention_mask, labels, sents, sent_ids
+        if self.is_test:
+            return token_ids, attention_mask, sents, sent_ids
+        else:
+            labels = torch.LongTensor(labels)
+            return token_ids, attention_mask, labels, sents, sent_ids
 
     def collate_fn(self, all_data):
-        token_ids, attention_mask, labels, sents, sent_ids = self.pad_data(
-            all_data)
+        if self.is_test:
+            token_ids, attention_mask, sents, sent_ids = self.pad_data(
+                all_data)
 
-        batched_data = {
-            'token_ids': token_ids,
-            'attention_mask': attention_mask,
-            'labels': labels,
-            'sents': sents,
-            'sent_ids': sent_ids
-        }
+            return {
+                'token_ids': token_ids,
+                'attention_mask': attention_mask,
+                'sents': sents,
+                'sent_ids': sent_ids
+            }
 
-        return batched_data
+        else:
+            token_ids, attention_mask, labels, sents, sent_ids = self.pad_data(
+                all_data)
+
+            return {
+                'token_ids': token_ids,
+                'attention_mask': attention_mask,
+                'labels': labels,
+                'sents': sents,
+                'sent_ids': sent_ids
+            }
 
 
-class SentimentTestDataset(Dataset):
-    def __init__(self, dataset, args):
-        self.dataset = dataset
-        self.p = args
-        self.tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
-
-    def __len__(self):
-        return len(self.dataset)
-
-    def __getitem__(self, idx):
-        return self.dataset[idx]
-
-    def pad_data(self, data):
-        sents = [x[0] for x in data]
-        sent_ids = [x[1] for x in data]
+class SentencePairTrainDataset(BaseDataSets):
+    def collate_fn(self, all_data):
+        sents1 = [x[0] for x in all_data]
+        sents2 = [x[1] for x in all_data]
+        labels = [x[2] for x in all_data]
+        sent_ids = [x[3] for x in all_data]
 
         encoding = self.tokenizer(
-            sents, return_tensors='pt', padding=True, truncation=True)
+            sents1, sents2, return_tensors='pt', padding=True, truncation=True)
         token_ids = torch.LongTensor(encoding['input_ids'])
+        token_type_ids = torch.LongTensor(encoding['token_type_ids'])
         attention_mask = torch.LongTensor(encoding['attention_mask'])
+        labels = torch.LongTensor(labels)
 
-        return token_ids, attention_mask, sents, sent_ids
-
-    def collate_fn(self, all_data):
-        token_ids, attention_mask, sents, sent_ids = self.pad_data(all_data)
-
-        batched_data = {
+        return {
             'token_ids': token_ids,
+            'token_type_ids': token_type_ids,
             'attention_mask': attention_mask,
-            'sents': sents,
+            'labels': labels,
+            'sents1': sents1,
+            'sents2': sents2,
             'sent_ids': sent_ids
         }
-
-        return batched_data
 
 
 # Load the data: a list of (sentence, label).
-def load_data(filename, flag='train'):
+def load_data(args, mode='train'):
     num_labels = {}
     data = []
-    if flag == 'test':
+    filename = args.train if mode == 'train' else args.dev if mode == 'valid' else args.test
+    if args.dataset == 'semeval':
         with open(filename, 'r') as fp:
             for record in csv.DictReader(fp, delimiter='\t'):
-                sent = record['sentence'].lower().strip()
+                sent1 = record['sentence1'].lower().strip()
+                sent2 = record['sentence2'].lower().strip()
                 sent_id = record['id'].lower().strip()
-                data.append((sent, sent_id))
+                if mode == 'test':
+                    data.append((sent1, sent2, sent_id))
+                else:
+                    label = float(record['similarity'].strip())
+                    data.append((sent1, sent2, label, sent_id))
+    elif args.dataset == 'quora':
+        with open(filename, 'r') as fp:
+            for record in csv.DictReader(fp, delimiter='\t'):
+                sent1 = record['sentence1'].lower().strip()
+                sent2 = record['sentence2'].lower().strip()
+                sent_id = record['id'].lower().strip()
+                if mode == 'test':
+                    data.append((sent1, sent2, sent_id))
+                else:
+                    label = int(record['is_duplicate'].strip())
+                    data.append((sent1, sent2, label, sent_id))
     else:
-        with open(filename, 'r') as fp:
-            for record in csv.DictReader(fp, delimiter='\t'):
-                sent = record['sentence'].lower().strip()
-                sent_id = record['id'].lower().strip()
-                label = int(record['sentiment'].strip())
-                if label not in num_labels:
-                    num_labels[label] = len(num_labels)
-                data.append((sent, label, sent_id))
-        print(f"load {len(data)} data from {filename}")
+        if mode == 'test':
+            with open(filename, 'r') as fp:
+                for record in csv.DictReader(fp, delimiter='\t'):
+                    sent = record['sentence'].lower().strip()
+                    sent_id = record['id'].lower().strip()
+                    data.append((sent, sent_id))
+        else:
+            with open(filename, 'r') as fp:
+                for record in csv.DictReader(fp, delimiter='\t'):
+                    sent = record['sentence'].lower().strip()
+                    sent_id = record['id'].lower().strip()
+                    label = int(record['sentiment'].strip())
+                    if label not in num_labels:
+                        num_labels[label] = len(num_labels)
+                    data.append((sent, label, sent_id))
+            print(f"load {len(data)} data from {filename}")
 
-    if flag == 'train':
+    if mode == 'train':
         return data, len(num_labels)
     else:
-        return data
+        return data, None
 
 
 # Evaluate the model on dev examples.
@@ -378,20 +407,29 @@ def update_model_tilde(model_tilde: nn.Module, model: nn.Module, beta: float):
 
 def standard_loss(output, b_labels, args):
     if args.task_type == "classifier":
-        loss = F.cross_entropy(
+        return F.cross_entropy(
             output, b_labels.view(-1), reduction='sum') / args.batch_size
     elif args.task_type == "regressor":
-        loss = F.mse_loss(output, b_labels.view(-1), reduction='sum') / args.batch_size
+        return F.mse_loss(output, b_labels.view(-1), reduction='sum') / args.batch_size
+
+
+def pick_dataset(args, mode):
+    data, num_labels = load_data(args, mode)
+
+    if args.dataset == 'semeval' or args.dataset == 'quora':
+        dataset = SentencePairTrainDataset(data, args, is_test=(mode == 'test'))
+    else:
+        dataset = SentimentDataset(data, args, is_test=(mode == 'test'))
+
+    return dataset, num_labels
 
 
 def train(args):
     device = torch.device('cuda') if args.use_gpu else torch.device('cpu')
     # Create the data and its corresponding datasets and dataloader.
-    train_data, num_labels = load_data(args.train, 'train')
-    dev_data = load_data(args.dev, 'valid')
-
-    train_dataset = SentimentDataset(train_data, args)
-    dev_dataset = SentimentDataset(dev_data, args)
+    
+    train_dataset, num_labels = pick_dataset(args, 'train')
+    dev_dataset, _ = pick_dataset(args, 'valid')
 
     train_dataloader = DataLoader(train_dataset, shuffle=True, batch_size=args.batch_size,
                                   collate_fn=train_dataset.collate_fn)
@@ -407,9 +445,9 @@ def train(args):
 
     config = SimpleNamespace(**config)
 
-    if args.class_type == "classifier":
+    if args.task_type == "classifier":
         model = BertSentimentClassifier(config)
-    elif args.class_type == "regressor":
+    elif args.task_type == "regressor":
         model = BertRegressor(config)
     model = model.to(device)
 
@@ -464,16 +502,16 @@ def train(args):
 
                         optimizer.zero_grad()
 
-                        logits = model(b_ids, b_mask)
+                        output = model(b_ids, b_mask)
                         base_loss = standard_loss(output, b_labels, args)
 
                         # Find the adversarial perturbation and add to loss (L6 - L10).
                         perturb_loss = get_perturb_loss(
-                            model, b_ids, b_mask, logits, args, device)
+                            model, b_ids, b_mask, output, args, device)
 
                         # Add trust region loss (equation (3)'s D_breg).
                         breg_loss = get_bregmman_loss(
-                            model_tilde, logits, b_ids, b_mask, args)
+                            model_tilde, output, b_ids, b_mask, args)
 
                         loss = base_loss + args.lambda_s * perturb_loss + args.mu * breg_loss
 
@@ -514,14 +552,12 @@ def test(args):
         model.load_state_dict(saved['model'])
         model = model.to(device)
         print(f"load model from {args.filepath}")
-
-        dev_data = load_data(args.dev, 'valid')
-        dev_dataset = SentimentDataset(dev_data, args)
+        
+        dev_dataset, _ = pick_dataset(args, 'valid')
         dev_dataloader = DataLoader(
             dev_dataset, shuffle=False, batch_size=args.batch_size, collate_fn=dev_dataset.collate_fn)
 
-        test_data = load_data(args.test, 'test')
-        test_dataset = SentimentTestDataset(test_data, args)
+        test_dataset, _ = pick_dataset(args, 'test')
         test_dataloader = DataLoader(
             test_dataset, shuffle=False, batch_size=args.batch_size, collate_fn=test_dataset.collate_fn)
 
@@ -578,6 +614,11 @@ def get_args():
     # TODO: use a rate schedule for beta. In the paper it is decreasing to 0.999 after 10% of training.
     parser.add_argument(
         "--beta", type=float, help="Coefficient for momentum of theta tilde", default=0.99)
+    # TODO: actually implement this
+    parser.add_argument("--contrastive", type=bool, default=False,
+                        help="Use contrastive loss fromm https://arxiv.org/pdf/2104.08821.pdf")
+    parser.add_argument(
+        "--tau", type=float, help="Tau coefficient for the contrastive loss", default=0.1)
 
     args = parser.parse_args()
     return args
@@ -587,6 +628,7 @@ def get_dataset_config(ds: str, args: Any):
     # TODO: Add 2 Quora and SemEval datasets.
     registry = {
         "sst": SimpleNamespace(
+            dataset='sst',
             filepath='sst-classifier.pt',
             lr=args.lr,
             use_gpu=args.use_gpu,
@@ -611,6 +653,7 @@ def get_dataset_config(ds: str, args: Any):
             task_type="classifier"
         ),
         "cfimdb": SimpleNamespace(
+            dataset='cfimdb',
             filepath='cfimdb-classifier.pt',
             lr=args.lr,
             use_gpu=args.use_gpu,
@@ -635,6 +678,7 @@ def get_dataset_config(ds: str, args: Any):
             task_type="classifier"
         ),
         "semeval": SimpleNamespace(
+            dataset='semeval',
             filepath='semeval-regressor.pt',
             lr=args.lr,
             use_gpu=args.use_gpu,
