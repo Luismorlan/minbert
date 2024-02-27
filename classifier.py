@@ -136,6 +136,7 @@ class BaseDataSets(Dataset):
         self.dataset = dataset
         self.p = args
         self.is_test = is_test
+        self.label_type = torch.FloatTensor if args.task_type == 'regressor' else torch.LongTensor
         self.tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
 
     def __len__(self):
@@ -202,7 +203,7 @@ class SentencePairDataset(BaseDataSets):
         token_ids = torch.LongTensor(encoding['input_ids'])
         token_type_ids = torch.LongTensor(encoding['token_type_ids'])
         attention_mask = torch.LongTensor(encoding['attention_mask'])
-        labels = torch.LongTensor(labels)
+        labels = self.label_type(labels)
 
         return {
             'token_ids': token_ids,
@@ -722,7 +723,7 @@ if __name__ == "__main__":
 
         config = get_dataset_config(ds, args)
 
-        # train(config)
+        train(config)
 
         print(f'Evaluating on {ds}...')
         test(config)
