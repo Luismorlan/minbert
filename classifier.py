@@ -494,8 +494,7 @@ def train(args):
 
     lr = args.lr
     optimizer = AdamW(model.parameters(), lr=lr)
-    best_dev_acc = 0
-    best_dev_mse = float('inf')
+    best_dev_acc, best_dev_mse = 0, float('inf')
 
     # Run for the specified number of epochs.
     for epoch in range(args.epochs):
@@ -600,7 +599,10 @@ def test(args):
         device = torch.device('cuda') if args.use_gpu else torch.device('cpu')
         saved = torch.load(args.filepath)
         config = saved['model_config']
-        model = BertSentimentClassifier(config)
+        if args.task_type == "classifier":
+            model = BertSentimentClassifier(config)
+        elif args.task_type == "regressor":
+            model = BertRegressor(config)
         model.load_state_dict(saved['model'])
         model = model.to(device)
         print(f"load model from {args.filepath}")
