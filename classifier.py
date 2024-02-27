@@ -305,6 +305,24 @@ def save_model(model, optimizer, args, config, filepath):
     print(f"save the model to {filepath}")
 
 
+def l_s(p, q, type="cross_entropy"):
+    """Implementation of the L_s loss function for the SMART update."""
+    if type == "cross_entropy":
+        return F.kl_div(
+            F.log_softmax(p, dim=-1),
+            F.log_softmax(q, dim=-1),
+            reduction='batchmean',
+            log_target=True,
+        ) + F.kl_div(
+            F.log_softmax(q, dim=-1),
+            F.log_softmax(p, dim=-1),
+            reduction='batchmean',
+            log_target=True
+        )
+    elif type == "mse":
+        return F.mse_loss(p, q, reduction='mean')
+
+
 def get_perturb_loss(model: nn.Module, b_ids: torch.Tensor, b_mask: torch.Tensor, orginal_logits: torch.Tensor, args: Any, device: Any):
     # In addition to the standard cross-entropy loss, we also add the SMART loss.
     # Compute the embedding of the batch
@@ -314,7 +332,7 @@ def get_perturb_loss(model: nn.Module, b_ids: torch.Tensor, b_mask: torch.Tensor
     embeddings_perturbed: torch.Tensor = start_embeddings + \
         torch.normal(0, args.sigma, start_embeddings.size()).to(device)
 
-    # Loop until either tx iterations have been performed or the norm of the perturbation is greater than epsilon.
+    # Loop until tx iterations have been performed
     for _ in range(args.tx):
         # Compute the gradient of the loss with respect to the perturbed embedding.
         embeddings_perturbed.requires_grad_()
@@ -322,17 +340,7 @@ def get_perturb_loss(model: nn.Module, b_ids: torch.Tensor, b_mask: torch.Tensor
 
         # Use symmetrizied KL divergence as the loss function.
         # TODO: unify the l_s calculation into a single function that also usable for regression task.
-        loss_perturbed = F.kl_div(
-            F.log_softmax(logits, dim=-1),
-            F.log_softmax(orginal_logits, dim=-1),
-            reduction='batchmean',
-            log_target=True,
-        ) + F.kl_div(
-            F.log_softmax(orginal_logits, dim=-1),
-            F.log_softmax(logits, dim=-1),
-            reduction='batchmean',
-            log_target=True
-        )
+        loss_perturbed = l_s(logits, orginal_logits, type=args.loss_type)
 
         grad = torch.autograd.grad(
             loss_perturbed, embeddings_perturbed)[0]
@@ -349,17 +357,7 @@ def get_perturb_loss(model: nn.Module, b_ids: torch.Tensor, b_mask: torch.Tensor
     # the most adversarial perturbation.
     logits = model(embeddings_perturbed, b_mask, is_embedding=True)
 
-    return F.kl_div(
-        F.log_softmax(logits, dim=-1),
-        F.log_softmax(orginal_logits, dim=-1),
-        reduction='batchmean',
-        log_target=True,
-    ) + F.kl_div(
-        F.log_softmax(orginal_logits, dim=-1),
-        F.log_softmax(logits, dim=-1),
-        reduction='batchmean',
-        log_target=True
-    )
+    return l_s(logits, orginal_logits, type=args.loss_type)
 
 
 def get_bregmman_loss(model_tilde: nn.Module, logits: torch.Tensor, b_ids: torch.Tensor, b_mask: torch.Tensor):
@@ -368,19 +366,7 @@ def get_bregmman_loss(model_tilde: nn.Module, logits: torch.Tensor, b_ids: torch
     with torch.no_grad():
         logits_tilde = model_tilde(b_ids, b_mask)
 
-    bregmman_loss = F.kl_div(
-        F.log_softmax(logits, dim=-1),
-        F.log_softmax(logits_tilde, dim=-1),
-        reduction='batchmean',
-        log_target=True,
-    ) + F.kl_div(
-        F.log_softmax(logits_tilde, dim=-1),
-        F.log_softmax(logits, dim=-1),
-        reduction='batchmean',
-        log_target=True
-    )
-
-    return bregmman_loss
+    return l_s(logits, logits_tilde, type=args.loss_type)
 
 
 def update_model_tilde(model_tilde: nn.Module, model: nn.Module, beta: float):
@@ -616,6 +602,7 @@ def get_dataset_config(ds: str, args: Any):
             s=args.s,
             mu=args.mu,
             beta=args.beta,
+            loss_type="cross_entropy"
         ),
         "cfimdb": SimpleNamespace(
             filepath='cfimdb-classifier.pt',
@@ -639,6 +626,31 @@ def get_dataset_config(ds: str, args: Any):
             s=args.s,
             mu=args.mu,
             beta=args.beta,
+            loss_type="cross_entropy"
+        ),
+        "semeval": SimpleNamespace(
+            filepath='semeval-regressor.pt',
+            lr=args.lr,
+            use_gpu=args.use_gpu,
+            epochs=args.epochs,
+            batch_size=8,
+            hidden_dropout_prob=args.hidden_dropout_prob,
+            train='data/sts-train.csv',
+            dev='data/sts-dev.csv',
+            test='data/sts-test-student.csv',
+            option=args.option,
+            dev_out='predictions/' + args.option + '-sts-dev-out.csv',
+            test_out='predictions/' + args.option + '-sts-test-out.csv',
+            smart=args.smart,
+            lambda_s=args.lambda_s,
+            sigma=args.sigma,
+            epsilon=args.epsilon,
+            eta=args.eta,
+            tx=args.tx,
+            s=args.s,
+            mu=args.mu,
+            beta=args.beta,
+            loss_type="mse"
         ),
     }
 
