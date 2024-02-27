@@ -305,9 +305,9 @@ def save_model(model, optimizer, args, config, filepath):
     print(f"save the model to {filepath}")
 
 
-def l_s(p, q, type="cross_entropy"):
+def l_s(p, q, type="classifier"):
     """Implementation of the L_s loss function for the SMART update."""
-    if type == "cross_entropy":
+    if type == "classifier":
         return F.kl_div(
             F.log_softmax(p, dim=-1),
             F.log_softmax(q, dim=-1),
@@ -319,7 +319,7 @@ def l_s(p, q, type="cross_entropy"):
             reduction='batchmean',
             log_target=True
         )
-    elif type == "mse":
+    elif type == "regressor":
         return F.mse_loss(p, q, reduction='mean')
 
 
@@ -340,7 +340,7 @@ def get_perturb_loss(model: nn.Module, b_ids: torch.Tensor, b_mask: torch.Tensor
 
         # Use symmetrizied KL divergence as the loss function.
         # TODO: unify the l_s calculation into a single function that also usable for regression task.
-        loss_perturbed = l_s(logits, orginal_logits, type=args.loss_type)
+        loss_perturbed = l_s(logits, orginal_logits, type=args.task_type)
 
         grad = torch.autograd.grad(
             loss_perturbed, embeddings_perturbed)[0]
@@ -357,7 +357,7 @@ def get_perturb_loss(model: nn.Module, b_ids: torch.Tensor, b_mask: torch.Tensor
     # the most adversarial perturbation.
     logits = model(embeddings_perturbed, b_mask, is_embedding=True)
 
-    return l_s(logits, orginal_logits, type=args.loss_type)
+    return l_s(logits, orginal_logits, type=args.task_type)
 
 
 def get_bregmman_loss(model_tilde: nn.Module, logits: torch.Tensor, b_ids: torch.Tensor, b_mask: torch.Tensor, args: Any):
@@ -366,7 +366,7 @@ def get_bregmman_loss(model_tilde: nn.Module, logits: torch.Tensor, b_ids: torch
     with torch.no_grad():
         logits_tilde = model_tilde(b_ids, b_mask)
 
-    return l_s(logits, logits_tilde, type=args.loss_type)
+    return l_s(logits, logits_tilde, type=args.task_type)
 
 
 def update_model_tilde(model_tilde: nn.Module, model: nn.Module, beta: float):
@@ -374,6 +374,14 @@ def update_model_tilde(model_tilde: nn.Module, model: nn.Module, beta: float):
         for param_tilde, param_update in zip(model_tilde.parameters(), model.parameters()):
             param_tilde.mul_(beta)
             param_tilde.add_(param_update, alpha=1 - beta)
+
+
+def standard_loss(output, b_labels, args):
+    if args.task_type == "classifier":
+        loss = F.cross_entropy(
+            output, b_labels.view(-1), reduction='sum') / args.batch_size
+    elif args.task_type == "regressor":
+        loss = F.mse_loss(output, b_labels.view(-1), reduction='sum') / args.batch_size
 
 
 def train(args):
@@ -399,8 +407,10 @@ def train(args):
 
     config = SimpleNamespace(**config)
 
-    # TODO: Depends on the config. Use different type of model (classifier/regressor).
-    model = BertSentimentClassifier(config)
+    if args.class_type == "classifier":
+        model = BertSentimentClassifier(config)
+    elif args.class_type == "regressor":
+        model = BertRegressor(config)
     model = model.to(device)
 
     # Initialize the initial \tilde{\theta_1} when training with SMART (L1 in the algorithm).
@@ -432,11 +442,9 @@ def train(args):
                     b_mask = b_mask.to(device)
                     b_labels = b_labels.to(device)
                     optimizer.zero_grad()
-                    logits = model(b_ids, b_mask)
+                    output = model(b_ids, b_mask)
 
-                    # TODO: Also implement this for regression task.
-                    loss = F.cross_entropy(
-                        logits, b_labels.view(-1), reduction='sum') / args.batch_size
+                    loss = standard_loss(output, b_labels, args)
 
                     loss.backward()
                     optimizer.step()
@@ -456,10 +464,8 @@ def train(args):
 
                         optimizer.zero_grad()
 
-                        # TODO: also calculate regression loss.
                         logits = model(b_ids, b_mask)
-                        base_loss = F.cross_entropy(
-                            logits, b_labels.view(-1), reduction='sum') / args.batch_size
+                        base_loss = standard_loss(output, b_labels, args)
 
                         # Find the adversarial perturbation and add to loss (L6 - L10).
                         perturb_loss = get_perturb_loss(
@@ -602,7 +608,7 @@ def get_dataset_config(ds: str, args: Any):
             s=args.s,
             mu=args.mu,
             beta=args.beta,
-            loss_type="cross_entropy"
+            task_type="classifier"
         ),
         "cfimdb": SimpleNamespace(
             filepath='cfimdb-classifier.pt',
@@ -626,7 +632,7 @@ def get_dataset_config(ds: str, args: Any):
             s=args.s,
             mu=args.mu,
             beta=args.beta,
-            loss_type="cross_entropy"
+            task_type="classifier"
         ),
         "semeval": SimpleNamespace(
             filepath='semeval-regressor.pt',
@@ -650,7 +656,7 @@ def get_dataset_config(ds: str, args: Any):
             s=args.s,
             mu=args.mu,
             beta=args.beta,
-            loss_type="mse"
+            task_type="regressor"
         ),
     }
 
