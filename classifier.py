@@ -360,7 +360,7 @@ def get_perturb_loss(model: nn.Module, b_ids: torch.Tensor, b_mask: torch.Tensor
     return l_s(logits, orginal_logits, type=args.loss_type)
 
 
-def get_bregmman_loss(model_tilde: nn.Module, logits: torch.Tensor, b_ids: torch.Tensor, b_mask: torch.Tensor):
+def get_bregmman_loss(model_tilde: nn.Module, logits: torch.Tensor, b_ids: torch.Tensor, b_mask: torch.Tensor, args: Any):
     # TODO: unify the l_s calculation into a single function that also usable for regression task.
     # Disable grad as we never going to update logits_tilde.
     with torch.no_grad():
@@ -467,7 +467,7 @@ def train(args):
 
                         # Add trust region loss (equation (3)'s D_breg).
                         breg_loss = get_bregmman_loss(
-                            model_tilde, logits, b_ids, b_mask)
+                            model_tilde, logits, b_ids, b_mask, args)
 
                         loss = base_loss + args.lambda_s * perturb_loss + args.mu * breg_loss
 
