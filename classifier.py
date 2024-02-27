@@ -148,8 +148,11 @@ class BaseDataSets(Dataset):
 class SentimentDataset(BaseDataSets):
     def pad_data(self, data):
         sents = [x[0] for x in data]
-        labels = [x[1] for x in data]
-        sent_ids = [x[2] for x in data]
+        if self.is_test:
+            sent_ids = [x[1] for x in data]
+        else:
+            labels = [x[1] for x in data]
+            sent_ids = [x[2] for x in data]
 
         encoding = self.tokenizer(
             sents, return_tensors='pt', padding=True, truncation=True)
@@ -187,7 +190,7 @@ class SentimentDataset(BaseDataSets):
             }
 
 
-class SentencePairTrainDataset(BaseDataSets):
+class SentencePairDataset(BaseDataSets):
     def collate_fn(self, all_data):
         sents1 = [x[0] for x in all_data]
         sents2 = [x[1] for x in all_data]
@@ -417,7 +420,7 @@ def pick_dataset(args, mode):
     data, num_labels = load_data(args, mode)
 
     if args.dataset == 'semeval' or args.dataset == 'quora':
-        dataset = SentencePairTrainDataset(data, args, is_test=(mode == 'test'))
+        dataset = SentencePairDataset(data, args, is_test=(mode == 'test'))
     else:
         dataset = SentimentDataset(data, args, is_test=(mode == 'test'))
 
