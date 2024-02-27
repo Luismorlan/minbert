@@ -33,6 +33,7 @@ from datasets import (
 )
 
 from evaluation import model_eval_sst, model_eval_multitask, model_eval_test_multitask
+from classifier import l_s, get_bregmman_loss, get_perturb_loss
 
 
 TQDM_DISABLE=False
@@ -72,7 +73,7 @@ class MultitaskBERT(nn.Module):
                 param.requires_grad = True
         # You will want to add layers here to perform the downstream tasks.
         # Linear layer for binary sentiment classification
-        self.stmt_linear = nn.Linear(config.hidden_size, 1)
+        self.binary_linear = nn.Linear(config.hidden_size, 1)
         # Linear layer for multi-class sentiment classification
         self.sent_linear = nn.Linear(config.hidden_size, config.num_labels)
         # Linear layer for paraphrase detection
@@ -99,6 +100,17 @@ class MultitaskBERT(nn.Module):
             res = self.bert(ids_or_embedding, attention_mask)
 
         return res
+    
+
+    def predict_sentiment_binary(self, input_ids, attention_mask):
+        '''Given a batch of sentences, outputs logits for classifying sentiment as positive or negative.
+        '''
+        res = self.forward(input_ids, attention_mask)
+
+        # Size: (B, C)
+        pooler_output = res["pooler_output"]
+        
+        return self.binary_linear(pooler_output)
 
 
     def predict_sentiment(self, input_ids, attention_mask):
@@ -144,10 +156,17 @@ class MultitaskBERT(nn.Module):
         '''
         
         res1 = self.forward(input_ids_1, attention_mask_1)
+        res2 = self.forward(input_ids_2, attention_mask_2)
+
+        # Size: (B, 2*C)
+        pooler_output_1 = res1["pooler_output"]
+        pooler_output_2 = res2["pooler_output"]
+
+        # Combine the two embeddings
+        combined = torch.cat((pooler_output_1, pooler_output_2), dim=1)
+
+        return self.sts_linear(combined)
         
-
-
-
 
 def save_model(model, optimizer, args, config, filepath):
     save_info = {
