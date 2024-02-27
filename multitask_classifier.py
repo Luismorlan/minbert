@@ -184,8 +184,6 @@ class Trainer:
             # we zip the dataloaders together to train on all tasks at the same time
             train_iter = iter(zip(*train_dataloaders))
 
-            # import pdb; pdb.set_trace()
-
             while True:
                 try:
                     if not args.smart:
