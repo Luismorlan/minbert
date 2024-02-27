@@ -494,7 +494,7 @@ def train(args):
 
     lr = args.lr
     optimizer = AdamW(model.parameters(), lr=lr)
-    best_dev_acc = 0
+    best_dev_acc, best_dev_mse = 0, float('inf')
 
     # Run for the specified number of epochs.
     for epoch in range(args.epochs):
@@ -586,8 +586,8 @@ def train(args):
                 _ = model_eval(train_dataloader, model, device, args)
             dev_mse, dev_r2, *_ = model_eval(dev_dataloader, model, device, args)
 
-            if dev_mse < best_dev_acc:
-                best_dev_acc = dev_mse
+            if dev_mse < best_dev_mse:
+                best_dev_mse = dev_mse
                 save_model(model, optimizer, args, config, args.filepath)
 
             print(
