@@ -226,9 +226,9 @@ class Trainer:
 
             print(f"Epoch {epoch}:\n train loss :: {train_loss :.3f}")
             for i, (task, train_dataloader, dev_dataloader) in enumerate(zip(self.tasks, train_dataloaders, dev_dataloaders)):
-                print(f"    Evaluating {task.__class__.__name__} task on training set")
+                print(f"\nEvaluating {task.__class__.__name__} task on training set")
                 task.eval(model, train_dataloader, device)
-                print(f"    Evaluating {task.__class__.__name__} task on dev set")
+                print(f"\nEvaluating {task.__class__.__name__} task on dev set")
                 acc_dev[i] = task.eval(model, dev_dataloader, device)
 
             # TODO: how to weight these dev metrics across different tasks?
