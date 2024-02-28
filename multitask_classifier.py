@@ -447,7 +447,7 @@ def get_args():
         "--batch_size", help='sst: 64, cfimdb: 8 can fit a 12GB GPU', type=int, default=8)
     parser.add_argument("--hidden_dropout_prob", type=float, default=0.3)
     parser.add_argument("--lr", type=float, help="learning rate", default=1e-5)
-    parser.add_argument("--smart", type=bool, default=False,
+    parser.add_argument("--smart", action='store_true',
                         help='use SMART (https://arxiv.org/abs/1911.03437) update to fine-tune the model')
     parser.add_argument("--lambda_s", type=float, default=1.0,
                         help='lambda_s for the SMART update, only used when --smart is True')
@@ -469,7 +469,7 @@ def get_args():
     parser.add_argument(
         "--beta", type=float, help="Coefficient for momentum of theta tilde", default=0.99)
     # TODO: actually implement this
-    parser.add_argument("--contrastive", type=bool, default=False,
+    parser.add_argument("--contrastive", action='store_true',
                         help="Use contrastive loss fromm https://arxiv.org/pdf/2104.08821.pdf")
     parser.add_argument(
         "--tau", type=float, help="Tau coefficient for the contrastive loss", default=0.1)
