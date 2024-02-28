@@ -224,7 +224,7 @@ class Trainer:
             
             train_loss = train_loss / (num_batches)
 
-            print(f"Epoch {epoch}:\n train loss :: {train_loss :.3f}")
+            print(f"\n>>>Epoch {epoch}:\n train loss :: {train_loss :.3f}")
             for i, (task, train_dataloader, dev_dataloader) in enumerate(zip(self.tasks, train_dataloaders, dev_dataloaders)):
                 print(f"\nEvaluating {task.__class__.__name__} task on training set")
                 task.eval(model, train_dataloader, device)
