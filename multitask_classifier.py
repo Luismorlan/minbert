@@ -306,7 +306,14 @@ def train_multitask(args):
     model = model.to(device)
 
     # Init Trainer
-    trainer = Trainer(args, config, [sst_task, para_task, sts_task])
+    tasks = []
+    if 'sst' in args.tasks:
+        tasks.append(sst_task)
+    if 'quora' in args.tasks:
+        tasks.append(para_task)
+    if 'semeval' in args.tasks:
+        tasks.append(sts_task)
+    trainer = Trainer(args, config, tasks)
 
     # Train
     trainer.train(model, device)
@@ -463,8 +470,9 @@ def get_args():
                         help='Iteration size of x for the SMART update, only used when --smart is True')
     parser.add_argument("--s", type=int, default=1,
                         help='Iteration size of S for the SMART update, only used when --smart is True. This is to perform update within the trust region.')
-    parser.add_argument("--dataset", nargs="*", choices=[
-                        'sst', 'cfimdb', 'quora', 'semeval'], default=["sst", "cfimdb"], help="List of datasets that can be used to train or finetune.")
+    # cfimdb is available in classifier.py
+    parser.add_argument("--tasks", nargs="*", choices=[
+                        'sst', 'quora', 'semeval'], default=["sst"], help="List of datasets that can be used to train or finetune.")
     parser.add_argument("--mu", type=float,
                         help="Coefficient for Bregmma loss", default=1)
     # TODO: use a rate schedule for beta. In the paper it is decreasing to 0.999 after 10% of training.
