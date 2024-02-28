@@ -179,7 +179,7 @@ class Trainer:
             num_batches = 0
             train_loss = 0
 
-            progress_bar = tqdm(range(self.args.epochs), desc=f'train-{epoch}', disable=TQDM_DISABLE, total=max_len)
+            progress_bar = tqdm(desc=f'train-{epoch}', disable=TQDM_DISABLE, total=max_len)
             # we zip the dataloaders together to train on all tasks at the same time
             train_iter = iter(zip(*train_dataloaders))
 
@@ -207,7 +207,7 @@ class Trainer:
                             for batch, task in zip(batches, self.tasks):
                                 loss += task.loss(model, batch, device)
                                 loss += args.lambda_s * task.perturbed_loss(model, batch, device)
-                                loss += args.mu * task.get_bregmman_loss(model, batch, device)
+                                loss += args.mu * task.bregmman_loss(model, batch, device)
 
                             loss.backward()
                             optimizer.step()

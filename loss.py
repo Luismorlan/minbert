@@ -87,7 +87,6 @@ def get_perturb_loss_for_pair(model: nn.Module, b_ids1: torch.Tensor, b_mask1: t
             is_embedding=True)
 
         # Use symmetrizied KL divergence as the loss function.
-        # TODO: unify the l_s calculation into a single function that also usable for regression task.
         loss_perturbed = l_s(logits, orginal_logits, type=args.task_type)
 
         grad_1 = torch.autograd.grad(
@@ -121,7 +120,6 @@ def get_perturb_loss_for_pair(model: nn.Module, b_ids1: torch.Tensor, b_mask1: t
 
 def get_bregmman_loss(model_tilde: nn.Module, logits: torch.Tensor, b_ids: torch.Tensor, b_mask: torch.Tensor, args: Any, predict_fn: str = ''):
     predict_fn = getattr(model_tilde, predict_fn, model_tilde.__call__)
-    # TODO: unify the l_s calculation into a single function that also usable for regression task.
     # Disable grad as we never going to update logits_tilde.
     with torch.no_grad():
         logits_tilde = predict_fn(b_ids, b_mask)

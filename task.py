@@ -50,10 +50,6 @@ class SentimentClassificationTask(Task):
         loss = F.cross_entropy(
             logits, b_labels.view(-1), reduction='sum') / self.args.batch_size
 
-        if self.args.smart:
-            loss += get_perturb_loss(model, b_ids,
-                                     b_mask, logits, self.args, device)
-
         return loss
 
     def eval(self, model, dataloader, device):
