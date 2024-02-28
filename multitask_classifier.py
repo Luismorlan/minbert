@@ -30,7 +30,6 @@ from bert import BertModel
 from optimizer import AdamW
 from task import TQDM_DISABLE, Task, SentimentClassificationTask, ParaphraseDetectionTask, SemanticTextualSimilarityTask
 from loss import update_model_tilde
-from utils import Timer
 
 from tqdm import tqdm
 
@@ -187,18 +186,15 @@ class Trainer:
             while True:
                 try:
                     if not args.smart:
-                        with Timer("GETTING BATCH") as t:
-                            batches = next(train_iter)
+                        
+                        batches = next(train_iter)
                         loss = 0
                         optimizer.zero_grad()
-                        with Timer("FORWARD") as t:
-                            for batch, task in zip(batches, self.tasks):
-                                loss += task.loss(model, batch, device)
+                        for batch, task in zip(batches, self.tasks):
+                            loss += task.loss(model, batch, device)
 
-                        with Timer("BACKWARD") as t:
-                            loss.backward()
-                        with Timer("OPTIMIZE") as t:
-                            optimizer.step()
+                        loss.backward()
+                        optimizer.step()
 
                         train_loss += loss.item()
                         num_batches += 1
