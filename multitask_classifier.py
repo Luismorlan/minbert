@@ -172,7 +172,7 @@ class Trainer:
         dev_dataloaders = [task.dev_dataloader for task in self.tasks]
 
         max_len, longest_dl = max([(len(dl), dl) for dl in train_dataloaders], key=lambda x: x[0])
-        train_dataloaders = [cycle(dl) if dl != longest_dl else dl for dl in train_dataloaders]
+        aligned_train_dataloaders = [cycle(dl) if dl != longest_dl else dl for dl in train_dataloaders]
         model_tilde = copy.deepcopy(model) if args.smart else None
 
         for epoch in range(self.args.epochs):
@@ -181,7 +181,7 @@ class Trainer:
 
             progress_bar = tqdm(desc=f'train-{epoch}', disable=TQDM_DISABLE, total=max_len)
             # we zip the dataloaders together to train on all tasks at the same time
-            train_iter = iter(zip(*train_dataloaders))
+            train_iter = iter(zip(*aligned_train_dataloaders))
 
             while True:
                 try:
@@ -226,7 +226,9 @@ class Trainer:
 
             print(f"Epoch {epoch}:\n train loss :: {train_loss :.3f}")
             for i, (task, train_dataloader, dev_dataloader) in enumerate(zip(self.tasks, train_dataloaders, dev_dataloaders)):
+                print(f"    Evaluating {task.__class__.__name__} task on training set")
                 task.eval(model, train_dataloader, device)
+                print(f"    Evaluating {task.__class__.__name__} task on dev set")
                 acc_dev[i] = task.eval(model, dev_dataloader, device)
 
             # TODO: how to weight these dev metrics across different tasks?
