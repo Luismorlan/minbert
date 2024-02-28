@@ -375,7 +375,6 @@ def save_model(model, optimizer, args, config, filepath):
 
 def standard_loss(output, b_labels, args):
     if args.task_type == "classifier":
-        import pdb; pdb.set_trace()
         return F.cross_entropy(
             output, b_labels.view(-1), reduction='sum') / args.batch_size
     elif args.task_type == "regressor":
