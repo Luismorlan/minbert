@@ -6,7 +6,7 @@ import numpy as np
 
 from tqdm import tqdm
 
-from loss import get_perturb_loss, get_bregmman_loss, get_perturb_loss_for_pair, get_bregmman_loss_for_pair, update_model_tilde
+from loss import get_perturb_loss, get_bregmman_loss, get_perturb_loss_for_pair, get_bregmman_loss_for_pair
 
 TQDM_DISABLE = False
 

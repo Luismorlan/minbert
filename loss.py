@@ -135,7 +135,9 @@ def get_bregmman_loss_for_pair(model_tilde: nn.Module, logits: torch.Tensor, b_i
     return l_s(logits, logits_tilde, type=args.task_type)
 
 
-def update_model_tilde(model_tilde: nn.Module, model: nn.Module, beta: float):
+def update_model_tilde(model_tilde: nn.Module, model: nn.Module, beta: float, fraction: float):
+    # Use a different beta as training progresses. Scale down when training move beyond the first 10%.
+    beta = beta if fraction < 0.1 else 0.1 * beta
     with torch.no_grad():
         for param_tilde, param_update in zip(model_tilde.parameters(), model.parameters()):
             param_tilde.mul_(beta)
