@@ -490,8 +490,9 @@ def train(args):
                         num_batches += 1
                         progress_bar.update(1)
 
-                    # Update model tilde with momentum (L14).
-                    update_model_tilde(model_tilde, model, args.beta)
+                    # Update model tilde with momentum (L14), with a beta schedule.
+                    update_model_tilde(model_tilde, model,
+                                       args.beta, epoch/args.epochs)
 
             except StopIteration:
                 break
@@ -503,7 +504,8 @@ def train(args):
         if args.task_type == "classifier":
             train_acc, train_f1, * \
                 _ = model_eval(train_dataloader, model, device, args)
-            dev_acc, dev_f1, *_ = model_eval(dev_dataloader, model, device, args)
+            dev_acc, dev_f1, * \
+                _ = model_eval(dev_dataloader, model, device, args)
 
             if dev_acc > best_dev_acc:
                 best_dev_acc = dev_acc
@@ -514,7 +516,8 @@ def train(args):
         else:
             train_mse, train_r2, * \
                 _ = model_eval(train_dataloader, model, device, args)
-            dev_mse, dev_r2, *_ = model_eval(dev_dataloader, model, device, args)
+            dev_mse, dev_r2, * \
+                _ = model_eval(dev_dataloader, model, device, args)
 
             if dev_mse < best_dev_mse:
                 best_dev_mse = dev_mse

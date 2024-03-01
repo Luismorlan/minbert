@@ -109,7 +109,8 @@ class MultitaskBERT(nn.Module):
         (0 - negative, 1- somewhat negative, 2- neutral, 3- somewhat positive, 4- positive)
         Thus, your output should contain 5 logits for each sentence.
         '''
-        res = self.forward(ids_or_embedding, attention_mask, is_embedding=is_embedding)
+        res = self.forward(ids_or_embedding, attention_mask,
+                           is_embedding=is_embedding)
 
         # Size: (B, C)
         pooler_output = res["pooler_output"]
@@ -124,8 +125,10 @@ class MultitaskBERT(nn.Module):
         Note that your output should be unnormalized (a logit); it will be passed to the sigmoid function
         during evaluation.
         '''
-        res1 = self.forward(ids_or_embedding_1, attention_mask_1, is_embedding=is_embedding)
-        res2 = self.forward(ids_or_embedding_2, attention_mask_2, is_embedding=is_embedding)
+        res1 = self.forward(ids_or_embedding_1,
+                            attention_mask_1, is_embedding=is_embedding)
+        res2 = self.forward(ids_or_embedding_2,
+                            attention_mask_2, is_embedding=is_embedding)
 
         # Size: (B, 2*C)
         pooler_output_1 = res1["pooler_output"]
@@ -163,30 +166,35 @@ class Trainer:
         self.tasks = tasks
 
     def train(self, model: nn.Module, device: str):
-        best_dev_metrics = [0,] * len(self.tasks) # higher the better
-        acc_dev = [0,] * len(self.tasks) # higher the better
+        best_dev_metrics = [0,] * len(self.tasks)  # higher the better
+        acc_dev = [0,] * len(self.tasks)  # higher the better
         optimizer = AdamW(model.parameters(), lr=self.args.lr)
         model.train()
 
         train_dataloaders = [task.train_dataloader for task in self.tasks]
         dev_dataloaders = [task.dev_dataloader for task in self.tasks]
 
-        max_len, longest_dl = max([(len(dl), dl) for dl in train_dataloaders], key=lambda x: x[0])
-        aligned_train_dataloaders = [cycle(dl) if dl != longest_dl else dl for dl in train_dataloaders]
+        max_len, longest_dl = max(
+            [(len(dl), dl) for dl in train_dataloaders], key=lambda x: x[0])
+
+        # Align on the longest data loader, cycle other short data loaders. This is essentially
+        # to upsample small dataset so that it doesn't overfit that much.
+        aligned_train_dataloaders = [
+            cycle(dl) if dl != longest_dl else dl for dl in train_dataloaders]
         model_tilde = copy.deepcopy(model) if args.smart else None
 
         for epoch in range(self.args.epochs):
             num_batches = 0
             train_loss = 0
 
-            progress_bar = tqdm(desc=f'train-{epoch}', disable=TQDM_DISABLE, total=max_len)
+            progress_bar = tqdm(
+                desc=f'train-{epoch}', disable=TQDM_DISABLE, total=max_len)
             # we zip the dataloaders together to train on all tasks at the same time
             train_iter = iter(zip(*aligned_train_dataloaders))
 
             while True:
                 try:
                     if not args.smart:
-                        
                         batches = next(train_iter)
                         loss = 0
                         optimizer.zero_grad()
@@ -206,8 +214,10 @@ class Trainer:
                             batches = next(train_iter)
                             for batch, task in zip(batches, self.tasks):
                                 loss += task.loss(model, batch, device)
-                                loss += args.lambda_s * task.perturbed_loss(model, batch, device)
-                                loss += args.mu * task.bregmman_loss(model, batch, device)
+                                loss += args.lambda_s * \
+                                    task.perturbed_loss(model, batch, device)
+                                loss += args.mu * \
+                                    task.bregmman_loss(model, batch, device)
 
                             loss.backward()
                             optimizer.step()
@@ -215,26 +225,30 @@ class Trainer:
                             num_batches += 1
                             progress_bar.update(1)
 
-                        update_model_tilde(model_tilde, model, args.beta)
+                        update_model_tilde(
+                            model_tilde, model, args.beta, epoch / self.args.epochs)
 
                 except StopIteration:
                     break
 
             progress_bar.close()
-            
+
             train_loss = train_loss / (num_batches)
 
             print(f"\n>>>Epoch {epoch}:\n train loss :: {train_loss :.3f}")
             for i, (task, train_dataloader, dev_dataloader) in enumerate(zip(self.tasks, train_dataloaders, dev_dataloaders)):
-                print(f"\nEvaluating {task.__class__.__name__} task on training set")
+                print(
+                    f"\nEvaluating {task.__class__.__name__} task on training set")
                 task.eval(model, train_dataloader, device)
-                print(f"\nEvaluating {task.__class__.__name__} task on dev set")
+                print(
+                    f"\nEvaluating {task.__class__.__name__} task on dev set")
                 acc_dev[i] = task.eval(model, dev_dataloader, device)
 
             # TODO: how to weight these dev metrics across different tasks?
             if np.average(acc_dev) > np.average(best_dev_metrics):
                 best_dev_metrics = acc_dev
-                save_model(model, optimizer, self.args, self.config, self.args.filepath)
+                save_model(model, optimizer, self.args,
+                           self.config, self.args.filepath)
 
 
 def save_model(model, optimizer, args, config, filepath):
@@ -265,7 +279,7 @@ def train_multitask(args):
     sst_train_data, num_labels, para_train_data, sts_train_data = load_multitask_data(
         args.sst_train, args.para_train, args.sts_train, split='train')
     sst_dev_data, num_labels, para_dev_data, sts_dev_data = load_multitask_data(
-        args.sst_dev, args.para_dev, args.sts_dev, split='train')
+        args.sst_dev, args.para_dev, args.sts_dev, split='dev')
 
     sst_train_data = SentenceClassificationDataset(sst_train_data, args)
     sst_dev_data = SentenceClassificationDataset(sst_dev_data, args)
@@ -288,10 +302,12 @@ def train_multitask(args):
     sts_dev_dataloader = DataLoader(sts_dev_data, shuffle=False, batch_size=args.batch_size,
                                     collate_fn=sts_dev_data.collate_fn, num_workers=2)
     # Init tasks
-    sst_task = SentimentClassificationTask(args, sst_train_dataloader, sst_dev_dataloader)
-    para_task = ParaphraseDetectionTask(args, para_train_dataloader, para_dev_dataloader)
-    sts_task = SemanticTextualSimilarityTask(args, sts_train_dataloader, sts_dev_dataloader)
-
+    sst_task = SentimentClassificationTask(
+        args, sst_train_dataloader, sst_dev_dataloader)
+    para_task = ParaphraseDetectionTask(
+        args, para_train_dataloader, para_dev_dataloader)
+    sts_task = SemanticTextualSimilarityTask(
+        args, sts_train_dataloader, sts_dev_dataloader)
 
     # Init model.
     config = {'hidden_dropout_prob': args.hidden_dropout_prob,
@@ -317,7 +333,6 @@ def train_multitask(args):
 
     # Train
     trainer.train(model, device)
-
 
 
 def test_multitask(args):
