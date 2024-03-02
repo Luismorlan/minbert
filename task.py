@@ -1,6 +1,8 @@
 from abc import ABC, abstractmethod
 
 import torch
+from typing import Any, List
+from dataclasses import dataclass
 import torch.nn.functional as F
 import numpy as np
 from bert import BertModel
@@ -17,9 +19,21 @@ TQDM_DISABLE = False
 # task specific objective.
 
 
+
+@dataclass
+class EvalResult:
+    pred: List[Any]
+    ids: List[Any]
+    labels: List[Any]
+    metric: Any
+    description: str
+
+
 class Task(ABC, nn.Module):
-    def __init__(self, model: BertModel, train_dataloader, dev_dataloader) -> None:
+    def __init__(self, name: str, model: BertModel, train_dataloader, dev_dataloader) -> None:
         super().__init__()
+
+        self.name = name
 
         # All task must share the same base BertModel.
         self.model = model
@@ -34,7 +48,7 @@ class Task(ABC, nn.Module):
         ...
 
     @abstractmethod
-    def evaluate(self, dataloader):
+    def evaluate(self, dataloader, is_hidden) -> EvalResult:
         ...
 
     @abstractmethod
@@ -47,8 +61,8 @@ class Task(ABC, nn.Module):
 
 
 class SentimentClassificationTask(Task):
-    def __init__(self, *, hidden_size: int, num_labels: int, model: BertModel, train_dataloader, dev_dataloader):
-        super().__init__(model, train_dataloader, dev_dataloader)
+    def __init__(self, *, hidden_size: int, num_labels: int, model: BertModel, name: str, train_dataloader, dev_dataloader):
+        super().__init__(name, model, train_dataloader, dev_dataloader)
 
         # Linear classification.
         self.proj = nn.Linear(hidden_size, num_labels)
@@ -70,33 +84,47 @@ class SentimentClassificationTask(Task):
         b_labels = batch['labels']
         return F.cross_entropy(b_pred, b_labels.view(-1), reduction='mean')
 
-    def evaluate(self, dataloader):
+    def evaluate(self, dataloader, is_hidden=False) -> EvalResult:
         self.eval()
         device = next(self.model.parameters()).device
 
+        results = {
+            "pred": [],
+            "ids": [],
+            "labels": [],
+            "metric": None,
+            "description": ""
+        }
+
+        sentiment_accuracy = None
+
         with torch.no_grad():
-            sst_y_true = []
-            sst_y_pred = []
-            sst_sent_ids = []
             for _, batch in enumerate(tqdm(dataloader, desc=f'eval', disable=TQDM_DISABLE)):
                 batch = utils.move_batch(batch, device)
-                b_ids, b_mask, b_labels, b_sent_ids = batch['token_ids'], batch[
-                    'attention_mask'], batch['labels'], batch['sent_ids']
 
+                # Make prediction.
                 logits = self.forward(batch)
 
                 y_hat = logits.argmax(dim=-1).flatten().cpu().numpy()
-                b_labels = b_labels.flatten().cpu().numpy()
+                results["pred"].extend(y_hat)
+                results["ids"].extend(batch['sent_ids'])
 
-                sst_y_pred.extend(y_hat)
-                sst_y_true.extend(b_labels)
-                sst_sent_ids.extend(b_sent_ids)
+                if not is_hidden:
+                    results["labels"].extend(
+                        batch['labels'].flatten().cpu().numpy())
 
-            sentiment_accuracy = np.mean(
-                np.array(sst_y_pred) == np.array(sst_y_true))
+            if not is_hidden:
+                sentiment_accuracy = np.mean(
+                    np.array(results['pred']) == np.array(results['labels']))
 
-            print(f"    sentiment acc :: {sentiment_accuracy :.3f}")
-        return sentiment_accuracy
+                print(f"    sentiment acc :: {sentiment_accuracy :.3f}")
+        return EvalResult(
+            pred=results["pred"],
+            ids=results["ids"],
+            labels=results["labels"],
+            metric=sentiment_accuracy,
+            description="classificaiton accuracy"
+        )
 
     def perturbed_loss(self, batch):
         return get_perturb_loss(self, batch['token_ids'], batch['attention_mask'], batch['labels'], self.args)
