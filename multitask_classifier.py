@@ -20,6 +20,7 @@ from typing import Any, Callable, List
 from abc import ABC, abstractmethod
 from itertools import cycle
 import copy
+import utils
 
 import torch
 from torch import nn
@@ -28,7 +29,8 @@ from torch.utils.data import DataLoader
 
 from bert import BertModel
 from optimizer import AdamW
-from task import TQDM_DISABLE, Task, SentimentClassificationTask, ParaphraseDetectionTask, SemanticTextualSimilarityTask
+# from task import TQDM_DISABLE, Task, SentimentClassificationTask, ParaphraseDetectionTask, SemanticTextualSimilarityTask
+from task import TQDM_DISABLE, Task, SentimentClassificationTask
 from loss import update_model_tilde
 
 from tqdm import tqdm
@@ -159,17 +161,51 @@ class MultitaskBERT(nn.Module):
         return self.sts_linear(combined)
 
 
+# Get all parameters from a list of model, and make sure they are unique
+# (shared params will be counted only once).
+def get_unique_params(models: List[nn.Module]):
+    unique_ids = set()
+    res = []
+    for model in models:
+        for param in model.parameters():
+            if id(param) in unique_ids:
+                continue
+
+            # Add to parameter set
+            res.append(param)
+            unique_ids.add(id(param))
+
+    return res
+
+
+def init_task_tilde(tasks: List[nn.Module]) -> List[nn.Module]:
+    '''Initialize the model tilde for SMART update. 
+
+    It's important to keep the same Bert Base model parameter sharing after copy operation.
+    '''
+    copies = [copy.deepcopy(task) for task in tasks]
+    i = 1
+    while i < len(copies):
+        copies[i].model = copies[0].model
+    return copies
+
+
 class Trainer:
-    def __init__(self, args: Any, config: SimpleNamespace, tasks: List[Task]) -> None:
+    def __init__(self, args: Any, tasks: List[Task]) -> None:
         self.args = args
-        self.config = config
+
+        # Each task contains the base BERT model.
         self.tasks = tasks
 
-    def train(self, model: nn.Module, device: str):
+    def train(self, device: str):
+        for task in self.tasks:
+            task.to(device)
+            task.train()
+
         best_dev_metrics = [0,] * len(self.tasks)  # higher the better
         acc_dev = [0,] * len(self.tasks)  # higher the better
-        optimizer = AdamW(model.parameters(), lr=self.args.lr)
-        model.train()
+
+        optimizer = AdamW(get_unique_params(self.tasks), lr=self.args.lr)
 
         train_dataloaders = [task.train_dataloader for task in self.tasks]
         dev_dataloaders = [task.dev_dataloader for task in self.tasks]
@@ -179,9 +215,12 @@ class Trainer:
 
         # Align on the longest data loader, cycle other short data loaders. This is essentially
         # to upsample small dataset so that it doesn't overfit that much.
+        #
+        # TODO: Add additional strategy for just simply concate dataset instead of cycle.
         aligned_train_dataloaders = [
             cycle(dl) if dl != longest_dl else dl for dl in train_dataloaders]
-        model_tilde = copy.deepcopy(model) if args.smart else None
+
+        tasks_tilde = init_task_tilde(self.tasks)
 
         for epoch in range(self.args.epochs):
             num_batches = 0
@@ -199,7 +238,10 @@ class Trainer:
                         loss = 0
                         optimizer.zero_grad()
                         for batch, task in zip(batches, self.tasks):
-                            loss += task.loss(model, batch, device)
+                            batch = utils.move_batch(batch, device)
+
+                            pred = task.forward(batch)
+                            loss += task.loss(batch, pred)
 
                         loss.backward()
                         optimizer.step()
@@ -212,12 +254,20 @@ class Trainer:
                             loss = 0
                             optimizer.zero_grad()
                             batches = next(train_iter)
-                            for batch, task in zip(batches, self.tasks):
-                                loss += task.loss(model, batch, device)
+                            for batch, task, task_tilde in zip(batches, self.tasks, tasks_tilde):
+                                batch = utils.move_batch(batch, device)
+
+                                # 1. task specific loss.
+                                pred = task.forward(batch)
+                                loss += task.loss(batch, pred)
+
+                                # 2. perturbed loss to be robust to noise.
                                 loss += args.lambda_s * \
-                                    task.perturbed_loss(model, batch, device)
+                                    task.perturbed_loss(batch)
+
+                                # 3. bregmman loss to not deviate too much from original model.
                                 loss += args.mu * \
-                                    task.bregmman_loss(model, batch, device)
+                                    task.bregmman_loss(batch, task_tilde)
 
                             loss.backward()
                             optimizer.step()
@@ -226,7 +276,7 @@ class Trainer:
                             progress_bar.update(1)
 
                         update_model_tilde(
-                            model_tilde, model, args.beta, epoch / self.args.epochs)
+                            tasks_tilde, self.tasks, args.beta, epoch / self.args.epochs)
 
                 except StopIteration:
                     break
@@ -239,16 +289,17 @@ class Trainer:
             for i, (task, train_dataloader, dev_dataloader) in enumerate(zip(self.tasks, train_dataloaders, dev_dataloaders)):
                 print(
                     f"\nEvaluating {task.__class__.__name__} task on training set")
-                task.eval(model, train_dataloader, device)
+                task.evaluate(train_dataloader)
                 print(
                     f"\nEvaluating {task.__class__.__name__} task on dev set")
-                acc_dev[i] = task.eval(model, dev_dataloader, device)
+                acc_dev[i] = task.evaluate(dev_dataloader)
 
             # TODO: how to weight these dev metrics across different tasks?
-            if np.average(acc_dev) > np.average(best_dev_metrics):
-                best_dev_metrics = acc_dev
-                save_model(model, optimizer, self.args,
-                           self.config, self.args.filepath)
+            # TODO: re-enable the best model parameters.
+            # if np.average(acc_dev) > np.average(best_dev_metrics):
+            #     best_dev_metrics = acc_dev
+            #     save_model(model, optimizer, self.args,
+            #                self.config, self.args.filepath)
 
 
 def save_model(model, optimizer, args, config, filepath):
@@ -275,6 +326,15 @@ def train_multitask(args):
     in datasets.py to load in examples from the Quora and SemEval datasets.
     '''
     device = torch.device('cuda') if args.use_gpu else torch.device('cpu')
+
+    bert = BertModel.from_pretrained('bert-base-uncased').to(device)
+    # Pretrain mode does not require updating BERT paramters.
+    for param in bert.parameters():
+        if args.option == 'pretrain':
+            param.requires_grad = False
+        elif args.option == 'finetune':
+            param.requires_grad = True
+
     # Create the data and its corresponding datasets and dataloader.
     sst_train_data, num_labels, para_train_data, sts_train_data = load_multitask_data(
         args.sst_train, args.para_train, args.sts_train, split='train')
@@ -303,36 +363,33 @@ def train_multitask(args):
                                     collate_fn=sts_dev_data.collate_fn, num_workers=2)
     # Init tasks
     sst_task = SentimentClassificationTask(
-        args, sst_train_dataloader, sst_dev_dataloader)
-    para_task = ParaphraseDetectionTask(
-        args, para_train_dataloader, para_dev_dataloader)
-    sts_task = SemanticTextualSimilarityTask(
-        args, sts_train_dataloader, sts_dev_dataloader)
+        hidden_size=BERT_HIDDEN_SIZE,
+        num_labels=num_labels,
+        model=bert,
+        train_dataloader=sst_train_dataloader,
+        dev_dataloader=sst_dev_dataloader)
+    
+    # TODO: Bring back other tasks.
+    # para_task = ParaphraseDetectionTask(
+    #     args, para_train_dataloader, para_dev_dataloader)
+    # sts_task = SemanticTextualSimilarityTask(
+    #     args, sts_train_dataloader, sts_dev_dataloader)
 
     # Init model.
-    config = {'hidden_dropout_prob': args.hidden_dropout_prob,
-              'num_labels': num_labels,
-              'hidden_size': 768,
-              'data_dir': '.',
-              'option': args.option}
-
-    config = SimpleNamespace(**config)
-
-    model = MultitaskBERT(config)
-    model = model.to(device)
+    
 
     # Init Trainer
     tasks = []
     if 'sst' in args.tasks:
         tasks.append(sst_task)
-    if 'quora' in args.tasks:
-        tasks.append(para_task)
-    if 'semeval' in args.tasks:
-        tasks.append(sts_task)
-    trainer = Trainer(args, config, tasks)
+    # if 'quora' in args.tasks:
+    #     tasks.append(para_task)
+    # if 'semeval' in args.tasks:
+    #     tasks.append(sts_task)
+    trainer = Trainer(args, tasks)
 
     # Train
-    trainer.train(model, device)
+    trainer.train(device)
 
 
 def test_multitask(args):
@@ -345,13 +402,14 @@ def test_multitask(args):
         model = MultitaskBERT(config)
         model.load_state_dict(saved['model'])
         model = model.to(device)
+
         print(f"Loaded model to test from {args.filepath}")
 
-        sst_test_data, num_labels, para_test_data, sts_test_data = \
+        sst_test_data, _, para_test_data, sts_test_data = \
             load_multitask_data(args.sst_test, args.para_test,
                                 args.sts_test, split='test')
 
-        sst_dev_data, num_labels, para_dev_data, sts_dev_data = \
+        sst_dev_data, _, para_dev_data, sts_dev_data = \
             load_multitask_data(args.sst_dev, args.para_dev,
                                 args.sts_dev, split='dev')
 

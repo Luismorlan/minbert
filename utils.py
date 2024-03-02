@@ -41,6 +41,11 @@ WEIGHTS_NAME = "pytorch_model.bin"
 CONFIG_NAME = "config.json"
 
 
+def move_batch(batch: dict, device: str) -> dict:
+    '''Move the batch to the device (CPU or GPU).'''
+    return {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+
+
 def is_torch_available():
     return True
 

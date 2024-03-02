@@ -252,14 +252,19 @@ class BertModel(BertPreTrainedModel):
 
         return {'last_hidden_state': sequence_output, 'pooler_output': first_tk}
 
-    def forward(self, input_ids, attention_mask):
+    def forward(self, ids_or_embeddings, attention_mask):
         """
-        input_ids: [batch_size, seq_len], seq_len is the max length of the batch
+        ids_or_embedding: [B, T], when the input is tokens. Or [B, T, C], where the input is embedding.
         attention_mask: same size as input_ids, 1 represents non-padding tokens, 0 represents padding tokens
         """
+        input_size = len(ids_or_embeddings.shape)
+        if input_size != 2 and input_size != 3:
+            raise ValueError(
+                f"The BERT's input of unexpected shape: {ids_or_embeddings.shape}")
+
         # Get the embedding for each input token.
-        embedding_output = self.embed(input_ids=input_ids)
+        if len(ids_or_embeddings.shape) == 2:
+            ids_or_embeddings = self.embed(input_ids=ids_or_embeddings)
 
         # Feed the embedding to the transformer.
-        return self.forward_with_embedding(embedding_output, attention_mask)
-        
+        return self.forward_with_embedding(ids_or_embeddings, attention_mask)
