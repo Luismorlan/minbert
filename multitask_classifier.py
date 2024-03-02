@@ -296,10 +296,10 @@ class Trainer:
 
             # TODO: how to weight these dev metrics across different tasks?
             # TODO: re-enable the best model parameters.
-            # if np.average(acc_dev) > np.average(best_dev_metrics):
-            #     best_dev_metrics = acc_dev
-            #     save_model(model, optimizer, self.args,
-            #                self.config, self.args.filepath)
+            if np.average(acc_dev) > np.average(best_dev_metrics):
+                best_dev_metrics = acc_dev
+                save_model(model, optimizer, self.args,
+                           self.config, self.args.filepath)
 
 
 def save_model(model, optimizer, args, config, filepath):

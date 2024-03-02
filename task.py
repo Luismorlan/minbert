@@ -72,7 +72,7 @@ class SentimentClassificationTask(Task):
 
     def evaluate(self, dataloader):
         self.eval()
-        device = next(self.model.parameters())
+        device = next(self.model.parameters()).device
 
         with torch.no_grad():
             sst_y_true = []
