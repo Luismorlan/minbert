@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, List
 
 import torch
 import torch.nn as nn
@@ -23,12 +23,13 @@ def l_s(p, q, type="classifier"):
         return F.mse_loss(p, q, reduction='mean')
 
 
-def get_perturb_loss(model: nn.Module, b_ids: torch.Tensor, b_mask: torch.Tensor, orginal_logits: torch.Tensor, args: Any, device: Any, predict_fn: str = ''):
+def get_perturb_loss(task: nn.Module, b_ids: torch.Tensor, b_mask: torch.Tensor, orginal_logits: torch.Tensor, args: Any):
+    # Use the same device as the input tensor.
+    device = b_ids.device
+
     # In addition to the standard cross-entropy loss, we also add the SMART loss.
     # Compute the embedding of the batch
-    start_embeddings = model.embed(b_ids)
-    # Different task require different predict function
-    predict_fn = getattr(model, predict_fn, model.__call__)
+    start_embeddings = task.model.embed(b_ids)
 
     # Perturb the embedding with Gaussian noise.
     embeddings_perturbed: torch.Tensor = start_embeddings + \
@@ -38,7 +39,7 @@ def get_perturb_loss(model: nn.Module, b_ids: torch.Tensor, b_mask: torch.Tensor
     for _ in range(args.tx):
         # Compute the gradient of the loss with respect to the perturbed embedding.
         embeddings_perturbed.requires_grad_()
-        logits = predict_fn(embeddings_perturbed, b_mask, is_embedding=True)
+        logits = task.forward_with_embedding(embeddings_perturbed, b_mask)
 
         # Use symmetrizied KL divergence as the loss function.
         # TODO: unify the l_s calculation into a single function that also usable for regression task.
@@ -57,12 +58,15 @@ def get_perturb_loss(model: nn.Module, b_ids: torch.Tensor, b_mask: torch.Tensor
 
     # Calculating one more time for the final perturbatin loss, after we find
     # the most adversarial perturbation.
-    logits = predict_fn(embeddings_perturbed, b_mask, is_embedding=True)
+    logits = task.forward_with_embedding(embeddings_perturbed, b_mask)
 
     return l_s(logits, orginal_logits, type=args.task_type)
 
 
-def get_perturb_loss_for_pair(model: nn.Module, b_ids1: torch.Tensor, b_mask1: torch.Tensor, b_ids2: torch.Tensor, b_mask2: torch.Tensor, orginal_logits: torch.Tensor, args: Any, device: Any, predict_fn: str = ''):
+def get_perturb_loss_for_pair(model: nn.Module, b_ids1: torch.Tensor, b_mask1: torch.Tensor, b_ids2: torch.Tensor, b_mask2: torch.Tensor, orginal_logits: torch.Tensor, args: Any, predict_fn: str = ''):
+    # Use the same device as the input tensor.
+    device = b_ids1.device
+
     # We can perturb both embeddings at the same time.
     # Compute the embedding of the batch
     start_embeddings_1 = model.embed(b_ids1)
@@ -118,11 +122,10 @@ def get_perturb_loss_for_pair(model: nn.Module, b_ids1: torch.Tensor, b_mask1: t
     return l_s(logits, orginal_logits, type=args.task_type)
 
 
-def get_bregmman_loss(model_tilde: nn.Module, logits: torch.Tensor, b_ids: torch.Tensor, b_mask: torch.Tensor, args: Any, predict_fn: str = ''):
-    predict_fn = getattr(model_tilde, predict_fn, model_tilde.__call__)
+def get_bregmman_loss(task_tilde: nn.Module, task, batch: torch.Tensor, logits: torch.Tensor, args: Any):
     # Disable grad as we never going to update logits_tilde.
     with torch.no_grad():
-        logits_tilde = predict_fn(b_ids, b_mask)
+        logits_tilde = task_tilde(batch)
 
     return l_s(logits, logits_tilde, type=args.task_type)
 
@@ -135,10 +138,18 @@ def get_bregmman_loss_for_pair(model_tilde: nn.Module, logits: torch.Tensor, b_i
     return l_s(logits, logits_tilde, type=args.task_type)
 
 
-def update_model_tilde(model_tilde: nn.Module, model: nn.Module, beta: float, fraction: float):
+def update_model_tilde(model_tildes: List[nn.Module], models: List[nn.Module], beta: float, fraction: float):
     # Use a different beta as training progresses. Scale down when training move beyond the first 10%.
     beta = beta if fraction < 0.1 else 0.1 * beta
+
+    # Share parameters (specifically the base BERT) should be updated only once for all tasks.
+    updated_params = set()
+
     with torch.no_grad():
-        for param_tilde, param_update in zip(model_tilde.parameters(), model.parameters()):
-            param_tilde.mul_(beta)
-            param_tilde.add_(param_update, alpha=1 - beta)
+        for model_tilde, model in zip(model_tildes, models):
+            for param_tilde, param_update in zip(model_tilde.parameters(), model.parameters()):
+                if id(param_update) in updated_params:
+                    continue
+
+                param_tilde.mul_(beta).add_(param_update, alpha=1 - beta)
+                updated_params.add(id(param_update))
