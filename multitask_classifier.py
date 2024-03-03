@@ -226,9 +226,10 @@ class Trainer:
         with open('final_metrics.txt', 'a') as f:
             f.write("\n===============\n")
             all_tasks = "_".join([task.name for task in self.tasks])
+            smart = "" if not args.smart else "-smart"
             for i, task in enumerate(self.tasks):
                 f.write(
-                    f"\n{task.name}-{args.option}-{args.epochs}-{args.lr}-{all_tasks}\n")
+                    f"\n{task.name}-{args.option}-{args.epochs}-{args.lr}-{all_tasks}{smart}\n")
                 f.write(f"\ntrain metric: {all_train_metrics[i]}\n")
                 f.write(f"\ndev metric: {all_dev_metrics[i]}\n")
             f.write("\n===============\n")

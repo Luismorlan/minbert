@@ -147,9 +147,9 @@ class ParaphraseDetectionTask(Task):
         left = self.model.embed(b_ids_1)
         right = self.model.embed(b_ids_2)
 
-        return self.forward_with_embeddings(left, b_mask_1, right, b_mask_2)
+        return self.forward_with_embedding(left, b_mask_1, right, b_mask_2)
 
-    def forward_with_embeddings(self, b_embd_1, b_mask_1, b_embd_2, b_mask_2):
+    def forward_with_embedding(self, b_embd_1, b_mask_1, b_embd_2, b_mask_2):
         left = self.model(b_embd_1, b_mask_1)['pooler_output']
         right = self.model(b_embd_2, b_mask_2)['pooler_output']
 
