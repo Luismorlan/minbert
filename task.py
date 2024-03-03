@@ -126,8 +126,8 @@ class SentimentClassificationTask(Task):
             description="classificaiton accuracy"
         )
 
-    def perturbed_loss(self, batch):
-        return get_perturb_loss(self, batch['token_ids'], batch['attention_mask'], batch['labels'], self.args, ls_type="classifier")
+    def perturbed_loss(self, batch, logits: torch.Tensor):
+        return get_perturb_loss(self, batch['token_ids'], batch['attention_mask'], logits, self.args, ls_type="classifier")
 
     def bregmman_loss(self, batch, logits: torch.Tensor, task_tilde: nn.Module):
         return get_bregmman_loss(task_tilde, batch, logits, ls_type="classifier")
@@ -204,8 +204,8 @@ class ParaphraseDetectionTask(Task):
             description="classificaiton accuracy"
         )
 
-    def perturbed_loss(self, batch):
-        return get_perturb_loss_for_pair(self, batch['token_ids_1'], batch['attention_mask_1'], batch['token_ids_2'], batch['attention_mask_2'], batch['labels'], self.args, ls_type="classifier")
+    def perturbed_loss(self, batch, original_logits: torch.Tensor):
+        return get_perturb_loss_for_pair(self, batch['token_ids_1'], batch['attention_mask_1'], batch['token_ids_2'], batch['attention_mask_2'], original_logits, self.args, ls_type="classifier")
 
     def bregmman_loss(self, batch, logits: torch.Tensor, task_tilde: nn.Module):
         return get_bregmman_loss(task_tilde, batch, logits, ls_type="classifier")
@@ -282,8 +282,8 @@ class SemanticTextualSimilarityTask(Task):
             description="correlation with true label"
         )
 
-    def perturbed_loss(self, batch):
-        return get_perturb_loss_for_pair(self, batch['token_ids_1'], batch['attention_mask_1'], batch['token_ids_2'], batch['attention_mask_2'], batch['labels'], self.args, ls_type="regressor")
+    def perturbed_loss(self, batch, original_logits: torch.Tensor):
+        return get_perturb_loss_for_pair(self, batch['token_ids_1'], batch['attention_mask_1'], batch['token_ids_2'], batch['attention_mask_2'], original_logits, self.args, ls_type="regressor")
 
     def bregmman_loss(self, batch, logits: torch.Tensor, task_tilde: nn.Module):
         return get_bregmman_loss(task_tilde, batch, logits, ls_type="regressor")
