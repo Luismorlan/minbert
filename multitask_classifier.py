@@ -15,9 +15,7 @@ writes all required submission files.
 import random
 import numpy as np
 import argparse
-from types import SimpleNamespace
-from typing import Any, Callable, List
-from abc import ABC, abstractmethod
+from typing import Any, List
 from itertools import cycle
 import copy
 import utils
@@ -240,12 +238,9 @@ def train_multitask(args):
         task_info: TaskInfo = TASK_REGISTRY[task_name]
 
         if task_info.name == "sst":
-            # TODO: Clean up a smarter way of getting num_labels.
-            _, num_labels, _, _ = load_multitask_data(
-                args.sst_train, args.para_train, args.sts_train, split='train')
             tasks.append(SentimentClassificationTask(
                 hidden_size=BERT_HIDDEN_SIZE,
-                num_labels=num_labels,
+                num_labels=5,
                 model=bert,
                 name="sst",
                 train_dataloader=task_info.train_dataloader,
@@ -264,6 +259,15 @@ def train_multitask(args):
                 hidden_size=BERT_HIDDEN_SIZE,
                 model=bert,
                 name="sts",
+                train_dataloader=task_info.train_dataloader,
+                dev_dataloader=task_info.dev_dataloader,
+                args=args))
+        if task_info.name == "cfimdb":
+            tasks.append(SentimentClassificationTask(
+                hidden_size=BERT_HIDDEN_SIZE,
+                num_labels=2,
+                model=bert,
+                name="cfimdb",
                 train_dataloader=task_info.train_dataloader,
                 dev_dataloader=task_info.dev_dataloader,
                 args=args))
@@ -312,6 +316,13 @@ def get_args():
     parser.add_argument("--sts_test", type=str,
                         default="data/sts-test-student.csv")
 
+    parser.add_argument("--cfimdb_train", type=str,
+                        default="data/ids-cfimdb-train.csv")
+    parser.add_argument("--cfimdb_dev", type=str,
+                        default="data/ids-cfimdb-dev.csv")
+    parser.add_argument("--cfimdb_test", type=str,
+                        default="data/ids-cfimdb-test-student.csv")
+
     parser.add_argument("--seed", type=int, default=11711)
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--option", type=str,
@@ -334,6 +345,11 @@ def get_args():
     parser.add_argument("--sts_test_out", type=str,
                         default="predictions/sts-test-output.csv")
 
+    parser.add_argument("--cfimdb_dev_out", type=str,
+                        default="predictions/sts-dev-output.csv")
+    parser.add_argument("--cfimdb_test_out", type=str,
+                        default="predictions/sts-test-output.csv")
+
     parser.add_argument(
         "--batch_size", help='sst: 64, cfimdb: 8 can fit a 12GB GPU', type=int, default=8)
     parser.add_argument("--hidden_dropout_prob", type=float, default=0.3)
@@ -354,7 +370,7 @@ def get_args():
                         help='Iteration size of S for the SMART update, only used when --smart is True. This is to perform update within the trust region.')
     # cfimdb is available in classifier.py
     parser.add_argument("--tasks", nargs="*", choices=[
-                        'sst', 'quora', 'sts'], default=["sst"], help="List of datasets that can be used to train or finetune.")
+                        'sst', 'quora', 'sts', 'cfimdb'], default=["sst"], help="List of datasets that can be used to train or finetune.")
     parser.add_argument("--mu", type=float,
                         help="Coefficient for Bregmma loss", default=1)
     # TODO: use a rate schedule for beta. In the paper it is decreasing to 0.999 after 10% of training.
@@ -372,13 +388,13 @@ def get_args():
 
 def register_tasks(args: Any):
     """Load all datasets and register them by corresponding task name."""
-    sst_train_data, _, para_train_data, sts_train_data = load_multitask_data(
-        args.sst_train, args.para_train, args.sts_train, split='train')
-    sst_test_data, _, para_test_data, sts_test_data = \
+    sst_train_data, para_train_data, sts_train_data, cfimdb_train_data = load_multitask_data(
+        args.sst_train, args.para_train, args.sts_train, args.cfimdb_train, split='train')
+    sst_test_data, para_test_data, sts_test_data, cfimdb_test_data = \
         load_multitask_data(args.sst_test, args.para_test,
-                            args.sts_test, split='test')
-    sst_dev_data, _, para_dev_data, sts_dev_data = load_multitask_data(
-        args.sst_dev, args.para_dev, args.sts_dev, split='dev')
+                            args.sts_test, args.cfimdb_test, split='test')
+    sst_dev_data, para_dev_data, sts_dev_data, cfimdb_dev_data = load_multitask_data(
+        args.sst_dev, args.para_dev, args.sts_dev, args.cfimdb_dev, split='dev')
 
     # SST dataset.
     sst_train_data = SentenceClassificationDataset(sst_train_data, args)
@@ -393,6 +409,11 @@ def register_tasks(args: Any):
         sts_train_data, args, isRegression=True)
     sts_dev_data = SentencePairDataset(sts_dev_data, args, isRegression=True)
     sts_test_data = SentencePairTestDataset(sts_test_data, args)
+
+    cfimdb_train_data = SentenceClassificationDataset(cfimdb_train_data, args)
+    cfimdb_dev_data = SentenceClassificationDataset(cfimdb_dev_data, args)
+    cfimdb_test_data = SentenceClassificationTestDataset(
+        cfimdb_test_data, args)
 
     sst_train_dataloader = DataLoader(sst_train_data, shuffle=True, batch_size=args.batch_size,
                                       collate_fn=sst_train_data.collate_fn, num_workers=2)
@@ -414,6 +435,13 @@ def register_tasks(args: Any):
                                     collate_fn=sts_dev_data.collate_fn, num_workers=2)
     sts_test_dataloader = DataLoader(sts_test_data, shuffle=True, batch_size=args.batch_size,
                                      collate_fn=sts_test_data.collate_fn)
+
+    cfimdb_train_dataloader = DataLoader(cfimdb_train_data, shuffle=True, batch_size=args.batch_size,
+                                         collate_fn=cfimdb_train_data.collate_fn, num_workers=2)
+    cfimdb_dev_dataloader = DataLoader(cfimdb_dev_data, shuffle=False, batch_size=args.batch_size,
+                                       collate_fn=cfimdb_dev_data.collate_fn, num_workers=2)
+    cfimdb_test_dataloader = DataLoader(cfimdb_test_data, shuffle=True, batch_size=args.batch_size,
+                                        collate_fn=cfimdb_test_data.collate_fn)
 
     TASK_REGISTRY["sst"] = TaskInfo(
         name="sst",
@@ -438,6 +466,14 @@ def register_tasks(args: Any):
         train_dataloader=sts_train_dataloader,
         dev_dataloader=sts_dev_dataloader,
         test_dataloader=sts_test_dataloader
+    )
+    TASK_REGISTRY["cfimdb"] = TaskInfo(
+        name="cfimdb",
+        model_path=f'cfimdb-{args.option}-{args.epochs}-{args.lr}-multitask.pt',
+        test_pred_path=f'predictions/cfimdb-{args.option}-{args.epochs}-{args.lr}-multitask-test-pred.csv',
+        train_dataloader=cfimdb_train_dataloader,
+        dev_dataloader=cfimdb_dev_dataloader,
+        test_dataloader=cfimdb_test_dataloader
     )
 
 
