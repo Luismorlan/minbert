@@ -29,8 +29,7 @@ from torch.utils.data import DataLoader
 
 from bert import BertModel
 from optimizer import AdamW
-# from task import TQDM_DISABLE, Task, SentimentClassificationTask, ParaphraseDetectionTask, SemanticTextualSimilarityTask
-from task import TQDM_DISABLE, Task, SentimentClassificationTask
+from task import TQDM_DISABLE, Task, SentimentClassificationTask, ParaphraseDetectionTask, SemanticTextualSimilarityTask
 from loss import update_model_tilde
 
 from tqdm import tqdm
@@ -67,6 +66,9 @@ class TaskInfo:
     name: str
     model_path: str
     test_pred_path: str
+    train_dataloader: DataLoader
+    dev_dataloader: DataLoader
+    test_dataloader: DataLoader
 
 
 TASK_REGISTRY = {}
@@ -198,6 +200,7 @@ def init_task_tilde(tasks: List[nn.Module]) -> List[nn.Module]:
     i = 1
     while i < len(copies):
         copies[i].model = copies[0].model
+        i += 1
     return copies
 
 
@@ -278,7 +281,7 @@ class Trainer:
 
                                 # 3. bregmman loss to not deviate too much from original model.
                                 loss += args.mu * \
-                                    task.bregmman_loss(batch, task_tilde)
+                                    task.bregmman_loss(batch, pred, task_tilde)
 
                             loss.backward()
                             optimizer.step()
@@ -297,12 +300,11 @@ class Trainer:
             train_loss = train_loss / (num_batches)
 
             print(f"\n>>>Epoch {epoch}:\n train loss :: {train_loss :.3f}")
+
             for i, (task, train_dataloader, dev_dataloader) in enumerate(zip(self.tasks, train_dataloaders, dev_dataloaders)):
-                print(
-                    f"\nEvaluating {task.__class__.__name__} task on training set")
+                print(f"\nEvaluating {task.name} task on training set")
                 task.evaluate(train_dataloader)
-                print(
-                    f"\nEvaluating {task.__class__.__name__} task on dev set")
+                print(f"\nEvaluating {task.name} task on dev set")
                 acc_dev[i] = task.evaluate(dev_dataloader).metric
 
             # TODO: how to weight these dev metrics across different tasks?
@@ -324,6 +326,7 @@ def train_multitask(args):
     device = torch.device('cuda') if args.use_gpu else torch.device('cpu')
 
     bert = BertModel.from_pretrained('bert-base-uncased').to(device)
+
     # Pretrain mode does not require updating BERT paramters.
     for param in bert.parameters():
         if args.option == 'pretrain':
@@ -331,72 +334,47 @@ def train_multitask(args):
         elif args.option == 'finetune':
             param.requires_grad = True
 
-    # Create the data and its corresponding datasets and dataloader.
-    sst_train_data, num_labels, para_train_data, sts_train_data = load_multitask_data(
-        args.sst_train, args.para_train, args.sts_train, split='train')
-    sst_dev_data, num_labels, para_dev_data, sts_dev_data = load_multitask_data(
-        args.sst_dev, args.para_dev, args.sts_dev, split='dev')
-
-    sst_train_data = SentenceClassificationDataset(sst_train_data, args)
-    sst_dev_data = SentenceClassificationDataset(sst_dev_data, args)
-    para_train_data = SentencePairDataset(para_train_data, args)
-    para_dev_data = SentencePairDataset(para_dev_data, args)
-    sts_train_data = SentencePairDataset(
-        sts_train_data, args, isRegression=True)
-    sts_dev_data = SentencePairDataset(sts_dev_data, args, isRegression=True)
-
-    sst_train_dataloader = DataLoader(sst_train_data, shuffle=True, batch_size=args.batch_size,
-                                      collate_fn=sst_train_data.collate_fn, num_workers=2)
-    sst_dev_dataloader = DataLoader(sst_dev_data, shuffle=False, batch_size=args.batch_size,
-                                    collate_fn=sst_dev_data.collate_fn, num_workers=2)
-    para_train_dataloader = DataLoader(para_train_data, shuffle=True, batch_size=args.batch_size,
-                                       collate_fn=para_train_data.collate_fn, num_workers=2)
-    para_dev_dataloader = DataLoader(para_dev_data, shuffle=False, batch_size=args.batch_size,
-                                     collate_fn=para_dev_data.collate_fn, num_workers=2)
-    sts_train_dataloader = DataLoader(sts_train_data, shuffle=True, batch_size=args.batch_size,
-                                      collate_fn=sts_train_data.collate_fn, num_workers=2)
-    sts_dev_dataloader = DataLoader(sts_dev_data, shuffle=False, batch_size=args.batch_size,
-                                    collate_fn=sts_dev_data.collate_fn, num_workers=2)
-    # Init tasks
-    sst_task = SentimentClassificationTask(
-        hidden_size=BERT_HIDDEN_SIZE,
-        num_labels=num_labels,
-        model=bert,
-        name="sst",
-        train_dataloader=sst_train_dataloader,
-        dev_dataloader=sst_dev_dataloader)
-
-    # TODO: Bring back other tasks.
-    # para_task = ParaphraseDetectionTask(
-    #     args, para_train_dataloader, para_dev_dataloader)
-    # sts_task = SemanticTextualSimilarityTask(
-    #     args, sts_train_dataloader, sts_dev_dataloader)
-
-    # Init model.
-
-    # Init Trainer
     tasks = []
-    if 'sst' in args.tasks:
-        tasks.append(sst_task)
-    # if 'quora' in args.tasks:
-    #     tasks.append(para_task)
-    # if 'semeval' in args.tasks:
-    #     tasks.append(sts_task)
-    trainer = Trainer(args, tasks)
+    for task_name in args.tasks:
+        task_info: TaskInfo = TASK_REGISTRY[task_name]
 
-    # Train
+        if task_info.name == "sst":
+            # TODO: Clean up a smarter way of getting num_labels.
+            _, num_labels, _, _ = load_multitask_data(
+                args.sst_train, args.para_train, args.sts_train, split='train')
+            tasks.append(SentimentClassificationTask(
+                hidden_size=BERT_HIDDEN_SIZE,
+                num_labels=num_labels,
+                model=bert,
+                name="sst",
+                train_dataloader=task_info.train_dataloader,
+                dev_dataloader=task_info.dev_dataloader,
+                args=args))
+        if task_info.name == "quora":
+            tasks.append(ParaphraseDetectionTask(
+                hidden_size=BERT_HIDDEN_SIZE,
+                model=bert,
+                name="quora",
+                train_dataloader=task_info.train_dataloader,
+                dev_dataloader=task_info.dev_dataloader,
+                args=args))
+        if task_info.name == "sts":
+            tasks.append(SemanticTextualSimilarityTask(
+                hidden_size=BERT_HIDDEN_SIZE,
+                model=bert,
+                name="sts",
+                train_dataloader=task_info.train_dataloader,
+                dev_dataloader=task_info.dev_dataloader,
+                args=args))
+
+    assert len(tasks) > 0, "No task is loaded."
+
+    trainer = Trainer(args, tasks)
     trainer.train(device)
 
 
 def test_multitask(args):
     '''Test and save predictions on the dev and test sets of all three tasks.'''
-    sst_test_data, _, para_test_data, sts_test_data = \
-        load_multitask_data(args.sst_test, args.para_test,
-                            args.sts_test, split='test')
-    sst_test_data = SentenceClassificationTestDataset(sst_test_data, args)
-
-    sst_test_dataloader = DataLoader(sst_test_data, shuffle=True, batch_size=args.batch_size,
-                                     collate_fn=sst_test_data.collate_fn)
     with torch.no_grad():
         device = torch.device('cuda') if args.use_gpu else torch.device('cpu')
         for task_name in args.tasks:
@@ -404,100 +382,14 @@ def test_multitask(args):
                 TASK_REGISTRY[task_name].model_path).to(device)
 
             # TODO: Change based on task to evaluate
-            res = task.evaluate(sst_test_dataloader, is_hidden=True)
+            res = task.evaluate(
+                TASK_REGISTRY[task_name].test_dataloader, is_hidden=True)
             with open(TASK_REGISTRY[task_name].test_pred_path, "w+") as f:
                 print(f"Writing prediction output for {task_name}")
                 f.write(f"id \t Predicted_Sentiment \n")
                 for p, s in zip(res.ids, res.pred):
                     f.write(f"{p} , {s} \n")
                 print(f"Done writing for {task_name}")
-
-        # saved = torch.load(args.filepath)
-        # config = saved['model_config']
-
-        # model = MultitaskBERT(config)
-        # model.load_state_dict(saved['model'])
-        # model = model.to(device)
-
-        # print(f"Loaded model to test from {args.filepath}")
-
-        # sst_test_data, _, para_test_data, sts_test_data = \
-        #     load_multitask_data(args.sst_test, args.para_test,
-        #                         args.sts_test, split='test')
-
-        # sst_dev_data, _, para_dev_data, sts_dev_data = \
-        #     load_multitask_data(args.sst_dev, args.para_dev,
-        #                         args.sts_dev, split='dev')
-
-        # sst_test_data = SentenceClassificationTestDataset(sst_test_data, args)
-        # sst_dev_data = SentenceClassificationDataset(sst_dev_data, args)
-
-        # sst_test_dataloader = DataLoader(sst_test_data, shuffle=True, batch_size=args.batch_size,
-        #                                  collate_fn=sst_test_data.collate_fn)
-        # sst_dev_dataloader = DataLoader(sst_dev_data, shuffle=False, batch_size=args.batch_size,
-        #                                 collate_fn=sst_dev_data.collate_fn)
-
-        # para_test_data = SentencePairTestDataset(para_test_data, args)
-        # para_dev_data = SentencePairDataset(para_dev_data, args)
-
-        # para_test_dataloader = DataLoader(para_test_data, shuffle=True, batch_size=args.batch_size,
-        #                                   collate_fn=para_test_data.collate_fn)
-        # para_dev_dataloader = DataLoader(para_dev_data, shuffle=False, batch_size=args.batch_size,
-        #                                  collate_fn=para_dev_data.collate_fn)
-
-        # sts_test_data = SentencePairTestDataset(sts_test_data, args)
-        # sts_dev_data = SentencePairDataset(
-        #     sts_dev_data, args, isRegression=True)
-
-        # sts_test_dataloader = DataLoader(sts_test_data, shuffle=True, batch_size=args.batch_size,
-        #                                  collate_fn=sts_test_data.collate_fn)
-        # sts_dev_dataloader = DataLoader(sts_dev_data, shuffle=False, batch_size=args.batch_size,
-        #                                 collate_fn=sts_dev_data.collate_fn)
-
-        # dev_sentiment_accuracy, dev_sst_y_pred, dev_sst_sent_ids, \
-        #     dev_paraphrase_accuracy, dev_para_y_pred, dev_para_sent_ids, \
-        #     dev_sts_corr, dev_sts_y_pred, dev_sts_sent_ids = model_eval_multitask(sst_dev_dataloader,
-        #                                                                           para_dev_dataloader,
-        #                                                                           sts_dev_dataloader, model, device)
-
-        # test_sst_y_pred, \
-        #     test_sst_sent_ids, test_para_y_pred, test_para_sent_ids, test_sts_y_pred, test_sts_sent_ids = \
-        #     model_eval_test_multitask(sst_test_dataloader,
-        #                               para_test_dataloader,
-        #                               sts_test_dataloader, model, device)
-
-        # with open(args.sst_dev_out, "w+") as f:
-        #     print(f"dev sentiment acc :: {dev_sentiment_accuracy :.3f}")
-        #     f.write(f"id \t Predicted_Sentiment \n")
-        #     for p, s in zip(dev_sst_sent_ids, dev_sst_y_pred):
-        #         f.write(f"{p} , {s} \n")
-
-        # with open(args.sst_test_out, "w+") as f:
-        #     f.write(f"id \t Predicted_Sentiment \n")
-        #     for p, s in zip(test_sst_sent_ids, test_sst_y_pred):
-        #         f.write(f"{p} , {s} \n")
-
-        # with open(args.para_dev_out, "w+") as f:
-        #     print(f"dev paraphrase acc :: {dev_paraphrase_accuracy :.3f}")
-        #     f.write(f"id \t Predicted_Is_Paraphrase \n")
-        #     for p, s in zip(dev_para_sent_ids, dev_para_y_pred):
-        #         f.write(f"{p} , {s} \n")
-
-        # with open(args.para_test_out, "w+") as f:
-        #     f.write(f"id \t Predicted_Is_Paraphrase \n")
-        #     for p, s in zip(test_para_sent_ids, test_para_y_pred):
-        #         f.write(f"{p} , {s} \n")
-
-        # with open(args.sts_dev_out, "w+") as f:
-        #     print(f"dev sts corr :: {dev_sts_corr :.3f}")
-        #     f.write(f"id \t Predicted_Similiary \n")
-        #     for p, s in zip(dev_sts_sent_ids, dev_sts_y_pred):
-        #         f.write(f"{p} , {s} \n")
-
-        # with open(args.sts_test_out, "w+") as f:
-        #     f.write(f"id \t Predicted_Similiary \n")
-        #     for p, s in zip(test_sts_sent_ids, test_sts_y_pred):
-        #         f.write(f"{p} , {s} \n")
 
 
 def get_args():
@@ -561,7 +453,7 @@ def get_args():
                         help='Iteration size of S for the SMART update, only used when --smart is True. This is to perform update within the trust region.')
     # cfimdb is available in classifier.py
     parser.add_argument("--tasks", nargs="*", choices=[
-                        'sst', 'quora', 'semeval'], default=["sst"], help="List of datasets that can be used to train or finetune.")
+                        'sst', 'quora', 'sts'], default=["sst"], help="List of datasets that can be used to train or finetune.")
     parser.add_argument("--mu", type=float,
                         help="Coefficient for Bregmma loss", default=1)
     # TODO: use a rate schedule for beta. In the paper it is decreasing to 0.999 after 10% of training.
@@ -578,12 +470,76 @@ def get_args():
 
 
 def register_tasks(args: Any):
+    """Load all datasets and register them by corresponding task name."""
+    sst_train_data, _, para_train_data, sts_train_data = load_multitask_data(
+        args.sst_train, args.para_train, args.sts_train, split='train')
+    sst_test_data, _, para_test_data, sts_test_data = \
+        load_multitask_data(args.sst_test, args.para_test,
+                            args.sts_test, split='test')
+    sst_dev_data, _, para_dev_data, sts_dev_data = load_multitask_data(
+        args.sst_dev, args.para_dev, args.sts_dev, split='dev')
+
+    # SST dataset.
+    sst_train_data = SentenceClassificationDataset(sst_train_data, args)
+    sst_dev_data = SentenceClassificationDataset(sst_dev_data, args)
+    sst_test_data = SentenceClassificationTestDataset(sst_test_data, args)
+
+    para_train_data = SentencePairDataset(para_train_data, args)
+    para_dev_data = SentencePairDataset(para_dev_data, args)
+    para_test_data = SentencePairTestDataset(para_test_data, args)
+
+    sts_train_data = SentencePairDataset(
+        sts_train_data, args, isRegression=True)
+    sts_dev_data = SentencePairDataset(sts_dev_data, args, isRegression=True)
+    sts_test_data = SentencePairTestDataset(sts_test_data, args)
+
+    sst_train_dataloader = DataLoader(sst_train_data, shuffle=True, batch_size=args.batch_size,
+                                      collate_fn=sst_train_data.collate_fn, num_workers=2)
+    sst_dev_dataloader = DataLoader(sst_dev_data, shuffle=False, batch_size=args.batch_size,
+                                    collate_fn=sst_dev_data.collate_fn, num_workers=2)
+    sst_test_dataloader = DataLoader(sst_test_data, shuffle=True, batch_size=args.batch_size,
+                                     collate_fn=sst_test_data.collate_fn)
+
+    para_train_dataloader = DataLoader(para_train_data, shuffle=True, batch_size=args.batch_size,
+                                       collate_fn=para_train_data.collate_fn, num_workers=2)
+    para_dev_dataloader = DataLoader(para_dev_data, shuffle=False, batch_size=args.batch_size,
+                                     collate_fn=para_dev_data.collate_fn, num_workers=2)
+    para_test_dataloader = DataLoader(para_test_data, shuffle=True, batch_size=args.batch_size,
+                                      collate_fn=para_test_data.collate_fn)
+
+    sts_train_dataloader = DataLoader(sts_train_data, shuffle=True, batch_size=args.batch_size,
+                                      collate_fn=sts_train_data.collate_fn, num_workers=2)
+    sts_dev_dataloader = DataLoader(sts_dev_data, shuffle=False, batch_size=args.batch_size,
+                                    collate_fn=sts_dev_data.collate_fn, num_workers=2)
+    sts_test_dataloader = DataLoader(sts_test_data, shuffle=True, batch_size=args.batch_size,
+                                     collate_fn=sts_test_data.collate_fn)
+
     TASK_REGISTRY["sst"] = TaskInfo(
         name="sst",
         model_path=f'sst-{args.option}-{args.epochs}-{args.lr}-multitask.pt',
-        test_pred_path=f'predictions/sst-{args.option}-{args.epochs}-{args.lr}-multitask-test-pred.csv'
+        test_pred_path=f'predictions/sst-{args.option}-{args.epochs}-{args.lr}-multitask-test-pred.csv',
+        train_dataloader=sst_train_dataloader,
+        dev_dataloader=sst_dev_dataloader,
+        test_dataloader=sst_test_dataloader
     )
-    
+    TASK_REGISTRY["quora"] = TaskInfo(
+        name="quora",
+        model_path=f'quora-{args.option}-{args.epochs}-{args.lr}-multitask.pt',
+        test_pred_path=f'predictions/quora-{args.option}-{args.epochs}-{args.lr}-multitask-test-pred.csv',
+        train_dataloader=para_train_dataloader,
+        dev_dataloader=para_dev_dataloader,
+        test_dataloader=para_test_dataloader
+    )
+    TASK_REGISTRY["sts"] = TaskInfo(
+        name="sts",
+        model_path=f'sts-{args.option}-{args.epochs}-{args.lr}-multitask.pt',
+        test_pred_path=f'predictions/sts-{args.option}-{args.epochs}-{args.lr}-multitask-test-pred.csv',
+        train_dataloader=sts_train_dataloader,
+        dev_dataloader=sts_dev_dataloader,
+        test_dataloader=sts_test_dataloader
+    )
+
+
 if __name__ == "__main__":
     args = get_args()
     # Save path.
