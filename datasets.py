@@ -214,9 +214,8 @@ class SentencePairTestDataset(Dataset):
         return batched_data
 
 
-def load_multitask_data(sentiment_filename, paraphrase_filename, similarity_filename, split='train'):
+def load_multitask_data(sentiment_filename, paraphrase_filename, similarity_filename, cfimdb_filename, split='train'):
     sentiment_data = []
-    num_labels = set()
     if split == 'test':
         with open(sentiment_filename, 'r') as fp:
             for record in csv.DictReader(fp, delimiter='\t'):
@@ -229,11 +228,28 @@ def load_multitask_data(sentiment_filename, paraphrase_filename, similarity_file
                 sent = record['sentence'].lower().strip()
                 sent_id = record['id'].lower().strip()
                 label = int(record['sentiment'].strip())
-                num_labels.add(label)
                 sentiment_data.append((sent, label, sent_id))
 
     print(
         f"Loaded {len(sentiment_data)} {split} examples from {sentiment_filename}")
+
+    cfimdb_data = []
+    if split == 'test':
+        with open(cfimdb_filename, 'r') as fp:
+            for record in csv.DictReader(fp, delimiter='\t'):
+                sent = record['sentence'].lower().strip()
+                sent_id = record['id'].lower().strip()
+                cfimdb_data.append((sent, sent_id))
+    else:
+        with open(cfimdb_filename, 'r') as fp:
+            for record in csv.DictReader(fp, delimiter='\t'):
+                sent = record['sentence'].lower().strip()
+                sent_id = record['id'].lower().strip()
+                label = int(record['sentiment'].strip())
+                cfimdb_data.append((sent, label, sent_id))
+
+    print(
+        f"Loaded {len(cfimdb_data)} {split} examples from {cfimdb_filename}")
 
     paraphrase_data = []
     if split == 'test':
@@ -277,4 +293,4 @@ def load_multitask_data(sentiment_filename, paraphrase_filename, similarity_file
     print(
         f"Loaded {len(similarity_data)} {split} examples from {similarity_filename}")
 
-    return sentiment_data, len(num_labels), paraphrase_data, similarity_data
+    return sentiment_data, paraphrase_data, similarity_data, cfimdb_data
