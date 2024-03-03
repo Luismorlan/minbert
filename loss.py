@@ -20,10 +20,10 @@ def l_s(p, q, type="classifier"):
             log_target=True
         )
     elif type == "regressor":
-        return F.mse_loss(p, q, reduction='mean')
+        return F.mse_loss(p.view(-1), q.view(-1), reduction='mean')
 
 
-def get_perturb_loss(task: nn.Module, b_ids: torch.Tensor, b_mask: torch.Tensor, orginal_logits: torch.Tensor, args: Any):
+def get_perturb_loss(task: nn.Module, b_ids: torch.Tensor, b_mask: torch.Tensor, orginal_logits: torch.Tensor, args: Any, ls_type: str):
     # Use the same device as the input tensor.
     device = b_ids.device
 
@@ -60,19 +60,17 @@ def get_perturb_loss(task: nn.Module, b_ids: torch.Tensor, b_mask: torch.Tensor,
     # the most adversarial perturbation.
     logits = task.forward_with_embedding(embeddings_perturbed, b_mask)
 
-    return l_s(logits, orginal_logits, type=args.task_type)
+    return l_s(logits, orginal_logits, type=ls_type)
 
 
-def get_perturb_loss_for_pair(model: nn.Module, b_ids1: torch.Tensor, b_mask1: torch.Tensor, b_ids2: torch.Tensor, b_mask2: torch.Tensor, orginal_logits: torch.Tensor, args: Any, predict_fn: str = ''):
+def get_perturb_loss_for_pair(task: nn.Module, b_ids1: torch.Tensor, b_mask1: torch.Tensor, b_ids2: torch.Tensor, b_mask2: torch.Tensor, orginal_logits: torch.Tensor, args: Any, ls_type: str):
     # Use the same device as the input tensor.
     device = b_ids1.device
 
     # We can perturb both embeddings at the same time.
     # Compute the embedding of the batch
-    start_embeddings_1 = model.embed(b_ids1)
-    start_embeddings_2 = model.embed(b_ids2)
-    # Different task require different predict function
-    predict_fn = getattr(model, predict_fn, model.__call__)
+    start_embeddings_1 = task.model.embed(b_ids1)
+    start_embeddings_2 = task.model.embed(b_ids2)
 
     # Perturb the embedding with Gaussian noise.
     embeddings_perturbed_1: torch.Tensor = start_embeddings_1 + \
@@ -85,16 +83,16 @@ def get_perturb_loss_for_pair(model: nn.Module, b_ids1: torch.Tensor, b_mask1: t
         # Compute the gradient of the loss with respect to the perturbed embedding.
         embeddings_perturbed_1.requires_grad_()
         embeddings_perturbed_2.requires_grad_()
-        logits = predict_fn(
+
+        logits = task.forward_with_embedding(
             embeddings_perturbed_1, b_mask1,
-            embeddings_perturbed_2, b_mask2,
-            is_embedding=True)
+            embeddings_perturbed_2, b_mask2)
 
         # Use symmetrizied KL divergence as the loss function.
-        loss_perturbed = l_s(logits, orginal_logits, type=args.task_type)
+        loss_perturbed = l_s(logits, orginal_logits, type=ls_type)
 
         grad_1 = torch.autograd.grad(
-            loss_perturbed, embeddings_perturbed_1)[0]
+            loss_perturbed, embeddings_perturbed_1, retain_graph=True)[0]
         grad_2 = torch.autograd.grad(
             loss_perturbed, embeddings_perturbed_2)[0]
 
@@ -114,28 +112,18 @@ def get_perturb_loss_for_pair(model: nn.Module, b_ids1: torch.Tensor, b_mask1: t
 
     # Calculating one more time for the final perturbatin loss, after we find
     # the most adversarial perturbation.
-    logits = predict_fn(
-        embeddings_perturbed_1, b_mask1,
-        embeddings_perturbed_2, b_mask2,
-        is_embedding=True)
+    logits = task.forward_with_embedding(
+        embeddings_perturbed_1, b_mask1, embeddings_perturbed_2, b_mask2)
 
-    return l_s(logits, orginal_logits, type=args.task_type)
+    return l_s(logits, orginal_logits, type=ls_type)
 
 
-def get_bregmman_loss(task_tilde: nn.Module, task, batch: torch.Tensor, logits: torch.Tensor, args: Any):
+def get_bregmman_loss(task_tilde: nn.Module, batch: torch.Tensor, logits: torch.Tensor, ls_type: str):
     # Disable grad as we never going to update logits_tilde.
     with torch.no_grad():
         logits_tilde = task_tilde(batch)
 
-    return l_s(logits, logits_tilde, type=args.task_type)
-
-
-def get_bregmman_loss_for_pair(model_tilde: nn.Module, logits: torch.Tensor, b_ids1: torch.Tensor, b_mask1: torch.Tensor, b_ids2: torch.Tensor, b_mask2: torch.Tensor, args: Any, predict_fn: str = ''):
-    predict_fn = getattr(model_tilde, predict_fn, model_tilde.__call__)
-    with torch.no_grad():
-        logits_tilde = predict_fn(b_ids1, b_mask1, b_ids2, b_mask2)
-
-    return l_s(logits, logits_tilde, type=args.task_type)
+    return l_s(logits, logits_tilde, type=ls_type)
 
 
 def update_model_tilde(model_tildes: List[nn.Module], models: List[nn.Module], beta: float, fraction: float):
