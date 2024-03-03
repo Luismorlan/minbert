@@ -1,3 +1,9 @@
+###############################################################
+#                                                             #
+# THIS FILE IS DEPRECATED! PLEASE USE multitask_classifier.py #
+#                                                             #
+###############################################################
+
 from atexit import register
 import random
 from this import d
