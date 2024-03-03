@@ -118,6 +118,10 @@ class Trainer:
         best_dev_metrics = [0,] * len(self.tasks)  # higher the better
         acc_dev = [0,] * len(self.tasks)  # higher the better
 
+        # ith element's j th epoch.
+        all_train_metrics = [[] for _ in self.tasks]
+        all_dev_metrics = [[] for _ in self.tasks]
+
         optimizer = AdamW(get_unique_params(self.tasks), lr=self.args.lr)
 
         train_dataloaders = [task.train_dataloader for task in self.tasks]
@@ -202,9 +206,14 @@ class Trainer:
 
             for i, (task, train_dataloader, dev_dataloader) in enumerate(zip(self.tasks, train_dataloaders, dev_dataloaders)):
                 print(f"\nEvaluating {task.name} task on training set")
-                task.evaluate(train_dataloader)
+                train_metric = task.evaluate(train_dataloader).metric
                 print(f"\nEvaluating {task.name} task on dev set")
-                acc_dev[i] = task.evaluate(dev_dataloader).metric
+                dev_metric = task.evaluate(dev_dataloader).metric
+                acc_dev[i] = dev_metric
+
+                # Store the metrics for later analysis.
+                all_train_metrics[i].append(train_metric)
+                all_dev_metrics[i].append(dev_metric)
 
             # TODO: how to weight these dev metrics across different tasks?
             # TODO: re-enable the best model parameters.
@@ -212,6 +221,17 @@ class Trainer:
                 best_dev_metrics = acc_dev
                 for task in self.tasks:
                     torch.save(task, TASK_REGISTRY[task.name].model_path)
+
+        # Write the final metrics to a file.
+        with open('final_metrics.txt', 'a') as f:
+            f.write("\n===============\n")
+            all_tasks = "_".join([task.name for task in self.tasks])
+            for i, task in enumerate(self.tasks):
+                f.write(
+                    f"\n{task.name}-{args.option}-{args.epochs}-{args.lr}-{all_tasks}\n")
+                f.write(f"\ntrain metric: {all_train_metrics[i]}\n")
+                f.write(f"\ndev metric: {all_dev_metrics[i]}\n")
+            f.write("\n===============\n")
 
 
 def train_multitask(args):
