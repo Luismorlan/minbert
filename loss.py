@@ -43,7 +43,7 @@ def get_perturb_loss(task: nn.Module, b_ids: torch.Tensor, b_mask: torch.Tensor,
 
         # Use symmetrizied KL divergence as the loss function.
         # TODO: unify the l_s calculation into a single function that also usable for regression task.
-        loss_perturbed = l_s(logits, orginal_logits, type=args.task_type)
+        loss_perturbed = l_s(logits, orginal_logits, type=ls_type)
 
         grad = torch.autograd.grad(
             loss_perturbed, embeddings_perturbed)[0]

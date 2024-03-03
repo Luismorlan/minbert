@@ -178,7 +178,7 @@ class Trainer:
 
                                 # 2. perturbed loss to be robust to noise.
                                 loss += args.lambda_s * \
-                                    task.perturbed_loss(batch)
+                                    task.perturbed_loss(batch, pred)
 
                                 # 3. bregmman loss to not deviate too much from original model.
                                 loss += args.mu * \
