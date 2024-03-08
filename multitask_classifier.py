@@ -211,6 +211,7 @@ class Trainer:
                 with torch.profiler.profile(
                         schedule=torch.profiler.schedule(wait=1, warmup=1, active=3, repeat=1),
                         activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+                        # Comment out the following line to generate trace.json, which can be viewed in chrome://tracing
                         on_trace_ready=torch.profiler.tensorboard_trace_handler('./log/minbert'),
                         record_shapes=True,
                         profile_memory=True,
@@ -223,7 +224,8 @@ class Trainer:
                 print(prof.key_averages(group_by_input_shape=True).table(sort_by="cpu_time_total", row_limit=10))
                 print(">"*20 + "CUDA Profile" + "<"*20)
                 print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))
-                prof.export_chrome_trace("trace.json")
+                # Uncomment the following line to export the trace for chrome/edge
+                # prof.export_chrome_trace("trace.json")
 
                 return
 
