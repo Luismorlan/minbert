@@ -21,7 +21,8 @@ class BertSelfAttention(nn.Module):
         # This dropout is applied to normalized attention scores following the original
         # implementation of transformer. Although it is a bit unusual, we empirically
         # observe that it yields better performance.
-        self.dropout = nn.Dropout(config.attention_probs_dropout_prob)
+        self.dropout_p = config.attention_probs_dropout_prob
+        self.dropout = nn.Dropout(self.dropout_p)
 
     def transform(self, x, linear_layer):
         # x is size: B, T, C
@@ -57,16 +58,25 @@ class BertSelfAttention(nn.Module):
         B, n, T, h = key.shape
 
         # Size: B, n, T, T
-        wei = query @ key.transpose(-1, -2) * \
-            (self.attention_head_size ** -0.5)
+        # flash attention is only supported in torch >= 2.0
+        if hasattr(torch.nn.functional, 'scaled_dot_product_attention'):
+            # expand attention_mask from [B, 1, 1, T] to [B, n, T, T]
+            attention_mask = attention_mask.expand(
+                B, n, T, T).contiguous().view(B, n, T, T)
+            wei = F.scaled_dot_product_attention(
+                query, key, value, attention_mask, dropout_p=self.dropout_p)
 
-        # Attention_mask: [B, 1, 1, T], with 0 and -inf.
-        # The following will be broadcasted.
-        wei = wei + attention_mask
-        wei = F.softmax(wei, dim=-1)
+        else:
+            wei = query @ key.transpose(-1, -2) * \
+                (self.attention_head_size ** -0.5)
 
-        # Size: B, n, T, h
-        wei = wei @ value
+            # Attention_mask: [B, 1, 1, T], with 0 and -inf.
+            # The following will be broadcasted.
+            wei = wei + attention_mask
+            wei = F.softmax(wei, dim=-1)
+
+            # Size: B, n, T, h
+            wei = wei @ value
 
         # Convert back to: B, T, C = n * h
         return wei.transpose(1, 2).contiguous().view(B, T, -1)
