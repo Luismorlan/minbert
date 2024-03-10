@@ -1,3 +1,6 @@
 __pycache__
 predictions
 *.pt
+wandb
+.vscode
+log

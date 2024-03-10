@@ -30,6 +30,7 @@ from optimizer import AdamW
 from task import TQDM_DISABLE, Task, SentimentClassificationTask, ParaphraseDetectionTask, SemanticTextualSimilarityTask
 from loss import update_model_tilde
 
+import wandb
 from tqdm import tqdm
 from dataclasses import dataclass
 
@@ -110,6 +111,8 @@ class Trainer:
 
         # Each task contains the base BERT model.
         self.tasks = tasks
+        wandb.init(project="minbert")
+        wandb.config.update(args.__dict__)
 
     def _loop(self, train_iter, device, optimizer, train_loss, num_batches, progress_bar, tasks_tilde, epoch, prof=None):
         steps = 0
@@ -238,18 +241,23 @@ class Trainer:
             train_loss = train_loss / (num_batches)
 
             print(f"\n>>>Epoch {epoch}:\n train loss :: {train_loss :.3f}")
+            log = {"train_loss": train_loss}
 
             for i, (task, train_dataloader, dev_dataloader) in enumerate(zip(self.tasks, train_dataloaders, dev_dataloaders)):
                 print(f"\nEvaluating {task.name} task on training set")
                 train_metric = task.evaluate(train_dataloader).metric
                 print(f"\nEvaluating {task.name} task on dev set")
                 dev_metric = task.evaluate(dev_dataloader).metric
+                log[f"{task.name}_train_metric"] = train_metric
+                log[f"{task.name}_dev_metric"] = dev_metric
                 acc_dev[i] = dev_metric
 
                 # Store the metrics for later analysis.
                 all_train_metrics[i].append(train_metric)
                 all_dev_metrics[i].append(dev_metric)
 
+            log["acc_dev_avg"] = np.average(acc_dev)
+            wandb.log(log)
             # TODO: how to weight these dev metrics across different tasks?
             # TODO: re-enable the best model parameters.
             if np.average(acc_dev) > np.average(best_dev_metrics):
