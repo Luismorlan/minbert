@@ -165,9 +165,9 @@ class Trainer:
 
                 # hardcode 5 as profiling steps
                 if prof is not None and steps > 5:
-                    break
+                    return num_batches
             except StopIteration:
-                break
+                return num_batches
 
     def train(self, device: str):
         for task in self.tasks:
@@ -217,7 +217,7 @@ class Trainer:
                         profile_memory=True,
                         with_stack=True
                 ) as prof:
-                        self._loop(train_iter, device, optimizer, train_loss,
+                        num_batches = self._loop(train_iter, device, optimizer, train_loss,
                        num_batches, progress_bar, tasks_tilde, epoch, prof)
                         
                 print(">"*20 + "CPU Profile" + "<"*20)
@@ -230,7 +230,7 @@ class Trainer:
                 return
 
             else:
-                self._loop(train_iter, device, optimizer, train_loss,
+                num_batches = self._loop(train_iter, device, optimizer, train_loss,
                         num_batches, progress_bar, tasks_tilde, epoch)
 
             progress_bar.close()
