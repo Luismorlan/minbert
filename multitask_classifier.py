@@ -30,6 +30,7 @@ from optimizer import AdamW
 from task import TQDM_DISABLE, Task, SentimentClassificationTask, ParaphraseDetectionTask, SemanticTextualSimilarityTask
 from loss import update_model_tilde
 
+import wandb
 from tqdm import tqdm
 from dataclasses import dataclass
 
@@ -42,6 +43,7 @@ from datasets import (
 )
 
 from evaluation import model_eval_multitask, model_eval_test_multitask
+from torch.profiler import profile, record_function, ProfilerActivity
 
 
 # Fix the random seed.
@@ -109,6 +111,66 @@ class Trainer:
 
         # Each task contains the base BERT model.
         self.tasks = tasks
+        wandb.init(project="minbert")
+        wandb.config.update(args.__dict__)
+
+    def _loop(self, train_iter, device, optimizer, train_loss, num_batches, progress_bar, tasks_tilde, epoch, prof=None):
+        steps = 0
+        while True:
+            try:
+                steps += 1
+                if prof is not None:
+                    prof.step()
+                if not self.args.smart:
+                    batches = next(train_iter)
+                    loss = 0
+                    optimizer.zero_grad()
+                    for batch, task in zip(batches, self.tasks):
+                        batch = utils.move_batch(batch, device)
+
+                        pred = task.forward(batch)
+                        loss += task.loss(batch, pred)
+
+                    loss.backward()
+                    optimizer.step()
+
+                    train_loss += loss.item()
+                    num_batches += 1
+                    progress_bar.update(1)
+                else:
+                    for _ in range(self.args.s):
+                        loss = 0
+                        optimizer.zero_grad()
+                        batches = next(train_iter)
+                        for batch, task, task_tilde in zip(batches, self.tasks, tasks_tilde):
+                            batch = utils.move_batch(batch, device)
+
+                            # 1. task specific loss.
+                            pred = task.forward(batch)
+                            loss += task.loss(batch, pred)
+
+                            # 2. perturbed loss to be robust to noise.
+                            loss += self.args.lambda_s * \
+                                task.perturbed_loss(batch, pred)
+
+                            # 3. bregmman loss to not deviate too much from original model.
+                            loss += self.args.mu * \
+                                task.bregmman_loss(batch, pred, task_tilde)
+
+                        loss.backward()
+                        optimizer.step()
+                        train_loss += loss.item()
+                        num_batches += 1
+                        progress_bar.update(1)
+
+                    update_model_tilde(
+                        tasks_tilde, self.tasks, self.args.beta, epoch / self.args.epochs)
+
+                # hardcode 5 as profiling steps
+                if prof is not None and steps > 5:
+                    return num_batches
+            except StopIteration:
+                return num_batches
 
     def train(self, device: str):
         for task in self.tasks:
@@ -148,73 +210,54 @@ class Trainer:
             # we zip the dataloaders together to train on all tasks at the same time
             train_iter = iter(zip(*aligned_train_dataloaders))
 
-            while True:
-                try:
-                    if not args.smart:
-                        batches = next(train_iter)
-                        loss = 0
-                        optimizer.zero_grad()
-                        for batch, task in zip(batches, self.tasks):
-                            batch = utils.move_batch(batch, device)
+            if self.args.profile:
+                with torch.profiler.profile(
+                        schedule=torch.profiler.schedule(wait=1, warmup=1, active=3, repeat=1),
+                        activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+                        # Comment out the following line to generate trace.json, which can be viewed in chrome://tracing
+                        on_trace_ready=torch.profiler.tensorboard_trace_handler('./log/minbert'),
+                        record_shapes=True,
+                        profile_memory=True,
+                        with_stack=True
+                ) as prof:
+                        num_batches = self._loop(train_iter, device, optimizer, train_loss,
+                       num_batches, progress_bar, tasks_tilde, epoch, prof)
+                        
+                print(">"*20 + "CPU Profile" + "<"*20)
+                print(prof.key_averages(group_by_input_shape=True).table(sort_by="cpu_time_total", row_limit=10))
+                print(">"*20 + "CUDA Profile" + "<"*20)
+                print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))
+                # Uncomment the following line to export the trace for chrome/edge
+                # prof.export_chrome_trace("trace.json")
 
-                            pred = task.forward(batch)
-                            loss += task.loss(batch, pred)
+                return
 
-                        loss.backward()
-                        optimizer.step()
-
-                        train_loss += loss.item()
-                        num_batches += 1
-                        progress_bar.update(1)
-                    else:
-                        for _ in range(args.s):
-                            loss = 0
-                            optimizer.zero_grad()
-                            batches = next(train_iter)
-                            for batch, task, task_tilde in zip(batches, self.tasks, tasks_tilde):
-                                batch = utils.move_batch(batch, device)
-
-                                # 1. task specific loss.
-                                pred = task.forward(batch)
-                                loss += task.loss(batch, pred)
-
-                                # 2. perturbed loss to be robust to noise.
-                                loss += args.lambda_s * \
-                                    task.perturbed_loss(batch, pred)
-
-                                # 3. bregmman loss to not deviate too much from original model.
-                                loss += args.mu * \
-                                    task.bregmman_loss(batch, pred, task_tilde)
-
-                            loss.backward()
-                            optimizer.step()
-                            train_loss += loss.item()
-                            num_batches += 1
-                            progress_bar.update(1)
-
-                        update_model_tilde(
-                            tasks_tilde, self.tasks, args.beta, epoch / self.args.epochs)
-
-                except StopIteration:
-                    break
+            else:
+                num_batches = self._loop(train_iter, device, optimizer, train_loss,
+                        num_batches, progress_bar, tasks_tilde, epoch)
 
             progress_bar.close()
 
             train_loss = train_loss / (num_batches)
 
             print(f"\n>>>Epoch {epoch}:\n train loss :: {train_loss :.3f}")
+            log = {"train_loss": train_loss}
 
             for i, (task, train_dataloader, dev_dataloader) in enumerate(zip(self.tasks, train_dataloaders, dev_dataloaders)):
                 print(f"\nEvaluating {task.name} task on training set")
                 train_metric = task.evaluate(train_dataloader).metric
                 print(f"\nEvaluating {task.name} task on dev set")
                 dev_metric = task.evaluate(dev_dataloader).metric
+                log[f"{task.name}_train_metric"] = train_metric
+                log[f"{task.name}_dev_metric"] = dev_metric
                 acc_dev[i] = dev_metric
 
                 # Store the metrics for later analysis.
                 all_train_metrics[i].append(train_metric)
                 all_dev_metrics[i].append(dev_metric)
 
+            log["acc_dev_avg"] = np.average(acc_dev)
+            wandb.log(log)
             # TODO: how to weight these dev metrics across different tasks?
             # TODO: re-enable the best model parameters.
             if np.average(acc_dev) > np.average(best_dev_metrics):
@@ -402,6 +445,8 @@ def get_args():
                         help="Use contrastive loss fromm https://arxiv.org/pdf/2104.08821.pdf")
     parser.add_argument(
         "--tau", type=float, help="Tau coefficient for the contrastive loss", default=0.1)
+    parser.add_argument(
+        "--profile", action='store_true', help="Profile the training process")
 
     args = parser.parse_args()
     return args
